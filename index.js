@@ -1,199 +1,354 @@
+// server/index.js
 const express = require("express");
 const http = require("http");
 const cors = require("cors");
 const { Server } = require("socket.io");
 
 const app = express();
-app.use(cors({ origin: "http://localhost:3000" }));
+
+// Environment variables
+const PORT = process.env.PORT || 4000;
+const NODE_ENV = process.env.NODE_ENV || "development";
+const CLIENT_URL = process.env.CLIENT_URL || "http://localhost:3000";
+
+// CORS тохиргоо - production болон development
+const allowedOrigins = [
+  "http://localhost:3000",
+  "http://localhost:5173", // Vite
+  CLIENT_URL,
+].filter(Boolean);
+
+app.use(
+  cors({
+    origin: function (origin, callback) {
+      // Allow requests with no origin (mobile apps, Postman, etc)
+      if (!origin) return callback(null, true);
+
+      if (allowedOrigins.indexOf(origin) !== -1 || NODE_ENV === "development") {
+        callback(null, true);
+      } else {
+        callback(new Error("Not allowed by CORS"));
+      }
+    },
+    credentials: true,
+  }),
+);
+
+app.use(express.json());
+
+// Health check endpoint - Render-ийн health check-д зориулсан
+app.get("/health", (req, res) => {
+  res.status(200).json({
+    status: "ok",
+    uptime: process.uptime(),
+    timestamp: Date.now(),
+    rooms: rooms.size,
+    players: playerToSocket.size,
+  });
+});
+
+// Root endpoint
+app.get("/", (req, res) => {
+  res.json({ message: "Game Server Running" });
+});
 
 const server = http.createServer(app);
 const io = new Server(server, {
-  cors: { origin: "http://localhost:3000" },
+  cors: {
+    origin: allowedOrigins,
+    credentials: true,
+    methods: ["GET", "POST"],
+  },
+  pingTimeout: 60000,
+  pingInterval: 25000,
+  transports: ["websocket", "polling"], // Polling нэмсэн
 });
 
-// roomCode -> roomState
-// roomState = { roomCode, maxPlayers, hostId, players: { [playerId]: { hero, ready } } }
 const rooms = new Map();
+const playerToSocket = new Map(); // playerId -> Set of socket.ids
 
-// socket.id -> { roomCode, playerId }
-const socketLink = new Map();
-
+// Helper: өрөөний төлөв илгээх (зөвхөн lobby мэдээлэл)
 function emitRoomState(roomCode) {
   const room = rooms.get(roomCode);
   if (!room) return;
-  io.to(roomCode).emit("roomState", room);
+  io.to(roomCode).emit("roomState", {
+    roomCode: room.roomCode,
+    maxPlayers: room.maxPlayers,
+    hostId: room.hostId,
+    started: room.started,
+    players: room.players,
+  });
 }
 
-function isHeroTaken(room, hero, exceptPlayerId) {
-  return Object.entries(room.players).some(([pid, p]) => {
-    if (pid === exceptPlayerId) return false;
-    return p.hero === hero;
+// Helper: Game state (зөвхөн тоглоом эхэлсэн үед)
+function emitGameState(roomCode) {
+  const room = rooms.get(roomCode);
+  if (!room || !room.started) return;
+
+  const players = {};
+  let idx = 1;
+  for (const [pid, p] of Object.entries(room.players)) {
+    players[pid] = {
+      id: pid,
+      playerId: idx,
+      x: 200 + idx * 60,
+      y: 300,
+      width: 48,
+      height: 48,
+      facingRight: true,
+      animFrame: 0,
+      color: "#ffffff",
+      dead: false,
+    };
+    idx++;
+  }
+
+  io.to(roomCode).emit("gameState", {
+    players,
+    keyCollected: false,
+    playersAtDoor: [],
+    gameStatus: "playing",
   });
+}
+
+// Helper: Тоглогчийн бүх socket-уудыг салгах
+function disconnectPlayer(playerId, roomCode) {
+  const sockets = playerToSocket.get(playerId);
+  if (!sockets) return;
+
+  sockets.forEach((socketId) => {
+    const socket = io.sockets.sockets.get(socketId);
+    if (socket) {
+      socket.leave(roomCode);
+      socket.data.roomCode = null;
+      socket.data.playerId = null;
+    }
+  });
+  playerToSocket.delete(playerId);
 }
 
 io.on("connection", (socket) => {
-  // ✅ HOST: createRoom
+  console.log(`Socket connected: ${socket.id}`);
+
+  // CREATE ROOM
   socket.on("createRoom", ({ roomCode, maxPlayers, hostId }) => {
-    if (!roomCode || !hostId) return;
+    try {
+      if (!roomCode || !maxPlayers || !hostId) {
+        socket.emit("createDenied", { message: "Invalid parameters" });
+        return;
+      }
 
-    // room already exists -> deny
-    if (rooms.has(roomCode)) {
-      socket.emit("createDenied", { message: "Room code already exists" });
-      return;
+      if (rooms.has(roomCode)) {
+        socket.emit("createDenied", { message: "Room code already exists" });
+        return;
+      }
+
+      const room = {
+        roomCode,
+        maxPlayers,
+        hostId,
+        started: false,
+        players: {
+          [hostId]: { hero: null, ready: false },
+        },
+      };
+
+      rooms.set(roomCode, room);
+      socket.join(roomCode);
+
+      socket.data.roomCode = roomCode;
+      socket.data.playerId = hostId;
+
+      if (!playerToSocket.has(hostId)) {
+        playerToSocket.set(hostId, new Set());
+      }
+      playerToSocket.get(hostId).add(socket.id);
+
+      emitRoomState(roomCode);
+    } catch (error) {
+      console.error("Error in createRoom:", error);
+      socket.emit("createDenied", { message: "Server error" });
     }
-
-    const room = {
-      roomCode,
-      maxPlayers: Number(maxPlayers ?? 4),
-      hostId,
-      players: {
-        [hostId]: { hero: null, ready: false },
-      },
-      started: false,
-    };
-
-    rooms.set(roomCode, room);
-
-    socket.join(roomCode);
-    socketLink.set(socket.id, { roomCode, playerId: hostId });
-
-    emitRoomState(roomCode);
   });
 
-  // ✅ JOIN: joinRoom
+  // JOIN ROOM
   socket.on("joinRoom", ({ roomCode, playerId }) => {
-    const room = rooms.get(roomCode);
-    if (!room) {
-      socket.emit("joinDenied", { message: "Room not found" });
-      return;
+    try {
+      const room = rooms.get(roomCode);
+      if (!room) {
+        socket.emit("joinDenied", { message: "Room not found" });
+        return;
+      }
+
+      // Тоглоом эхэлсэн үед орохыг хориглох
+      if (room.started) {
+        socket.emit("joinDenied", { message: "Game already started" });
+        return;
+      }
+
+      // Хэрэв өмнө нь нэгдсэн байвал хуучин socket-уудыг салгах
+      if (room.players[playerId]) {
+        disconnectPlayer(playerId, roomCode);
+      }
+
+      const count = Object.keys(room.players).length;
+      if (!room.players[playerId] && count >= room.maxPlayers) {
+        socket.emit("joinDenied", { message: "Room full" });
+        return;
+      }
+
+      if (!room.players[playerId]) {
+        room.players[playerId] = { hero: null, ready: false };
+      }
+
+      socket.join(roomCode);
+      socket.data.roomCode = roomCode;
+      socket.data.playerId = playerId;
+
+      if (!playerToSocket.has(playerId)) {
+        playerToSocket.set(playerId, new Set());
+      }
+      playerToSocket.get(playerId).add(socket.id);
+
+      emitRoomState(roomCode);
+    } catch (error) {
+      console.error("Error in joinRoom:", error);
+      socket.emit("joinDenied", { message: "Server error" });
     }
-
-    if (room.started) {
-      socket.emit("joinDenied", { message: "Game already started" });
-      return;
-    }
-
-    const count = Object.keys(room.players).length;
-    if (count >= room.maxPlayers && !room.players[playerId]) {
-      socket.emit("joinDenied", { message: "Room is full" });
-      return;
-    }
-
-    if (!room.players[playerId]) {
-      room.players[playerId] = { hero: null, ready: false };
-    }
-
-    socket.join(roomCode);
-    socketLink.set(socket.id, { roomCode, playerId });
-
-    emitRoomState(roomCode);
   });
 
-  // ✅ HERO select (давхардахгүй болгох гол хэсэг)
+  // SELECT HERO
   socket.on("selectHero", ({ hero }) => {
-    const link = socketLink.get(socket.id);
-    if (!link) return;
+    try {
+      const { roomCode, playerId } = socket.data;
+      if (!roomCode || !playerId) return;
 
-    const { roomCode, playerId } = link;
-    const room = rooms.get(roomCode);
-    if (!room) return;
+      const room = rooms.get(roomCode);
+      if (!room || !room.players[playerId]) return;
 
-    const me = room.players[playerId];
-    if (!me) return;
+      const taken = new Set(
+        Object.entries(room.players)
+          .filter(([pid, p]) => pid !== playerId && p.hero)
+          .map(([, p]) => p.hero),
+      );
 
-    if (room.started) {
-      socket.emit("heroDenied", { message: "Game already started" });
-      return;
+      if (taken.has(hero)) {
+        socket.emit("heroDenied", { message: "Hero already taken" });
+        return;
+      }
+
+      room.players[playerId].hero = hero;
+      room.players[playerId].ready = false;
+      emitRoomState(roomCode);
+    } catch (error) {
+      console.error("Error in selectHero:", error);
     }
-
-    if (isHeroTaken(room, hero, playerId)) {
-      socket.emit("heroDenied", { message: "That hero is already taken" });
-      return;
-    }
-
-    me.hero = hero;
-    me.ready = false; // hero солиход ready reset
-
-    emitRoomState(roomCode);
   });
 
-  // ✅ READY (join хүн ready дарж болно, host ч дарж болно)
+  // SET READY
   socket.on("setReady", ({ ready }) => {
-    const link = socketLink.get(socket.id);
-    if (!link) return;
+    try {
+      const { roomCode, playerId } = socket.data;
+      if (!roomCode || !playerId) return;
 
-    const { roomCode, playerId } = link;
-    const room = rooms.get(roomCode);
-    if (!room) return;
+      const room = rooms.get(roomCode);
+      if (!room) return;
 
-    const me = room.players[playerId];
-    if (!me) return;
+      const player = room.players[playerId];
+      if (!player) return;
 
-    if (!me.hero) {
-      socket.emit("readyDenied", { message: "Choose hero first" });
-      return;
+      if (!player.hero) {
+        socket.emit("readyDenied", { message: "Choose hero first" });
+        return;
+      }
+
+      player.ready = Boolean(ready);
+      emitRoomState(roomCode);
+    } catch (error) {
+      console.error("Error in setReady:", error);
     }
-
-    me.ready = Boolean(ready);
-    emitRoomState(roomCode);
   });
 
-  // ✅ HOST start game
+  // START GAME
   socket.on("startGameNow", () => {
-    const link = socketLink.get(socket.id);
-    if (!link) return;
+    try {
+      const { roomCode, playerId } = socket.data;
+      if (!roomCode || !playerId) return;
 
-    const { roomCode, playerId } = link;
-    const room = rooms.get(roomCode);
-    if (!room) return;
+      const room = rooms.get(roomCode);
+      if (!room) return;
 
-    if (room.hostId !== playerId) {
-      socket.emit("startDenied", { message: "Only host can start" });
-      return;
+      if (room.hostId !== playerId) {
+        socket.emit("startDenied", { message: "Only host can start" });
+        return;
+      }
+
+      const allPicked = Object.values(room.players).every((p) => p.hero);
+      if (!allPicked) {
+        socket.emit("startDenied", { message: "Everyone must pick a hero" });
+        return;
+      }
+
+      room.started = true;
+      io.to(roomCode).emit("startGame");
+      emitRoomState(roomCode);
+      emitGameState(roomCode);
+    } catch (error) {
+      console.error("Error in startGameNow:", error);
+      socket.emit("startDenied", { message: "Server error" });
     }
-
-    // Бүгд hero сонгосон эсэх (гол шаардлага)
-    const allPicked = Object.values(room.players).every((p) => !!p.hero);
-    if (!allPicked) {
-      socket.emit("startDenied", { message: "Everyone must pick a hero" });
-      return;
-    }
-
-    // (сонголт) Бүгд ready байх ёстой бол:
-    // const allReady = Object.values(room.players).every((p) => p.ready);
-    // if (!allReady) return socket.emit("startDenied", { message: "Everyone must be ready" });
-
-    room.started = true;
-    io.to(roomCode).emit("startGame");
-    emitRoomState(roomCode);
   });
 
-  // ✅ disconnect: player гарахад hero чөлөөлөгдөнө
+  // DISCONNECT
   socket.on("disconnect", () => {
-    const link = socketLink.get(socket.id);
-    socketLink.delete(socket.id);
-    if (!link) return;
+    console.log(`Socket disconnected: ${socket.id}`);
 
-    const { roomCode, playerId } = link;
-    const room = rooms.get(roomCode);
-    if (!room) return;
+    try {
+      const { roomCode, playerId } = socket.data;
+      if (!roomCode || !playerId) return;
 
-    delete room.players[playerId];
+      const sockets = playerToSocket.get(playerId);
+      if (sockets) {
+        sockets.delete(socket.id);
 
-    if (Object.keys(room.players).length === 0) {
-      rooms.delete(roomCode);
-      return;
+        // Хэрэв энэ тоглогчийн бүх socket салсан бол өрөөнөөс хас
+        if (sockets.size === 0) {
+          playerToSocket.delete(playerId);
+
+          const room = rooms.get(roomCode);
+          if (room) {
+            delete room.players[playerId];
+
+            if (Object.keys(room.players).length === 0) {
+              rooms.delete(roomCode);
+            } else {
+              // Хэрэв host салсан бол шинэ host томилох
+              if (room.hostId === playerId) {
+                room.hostId = Object.keys(room.players)[0];
+              }
+              emitRoomState(roomCode);
+            }
+          }
+        }
+      }
+    } catch (error) {
+      console.error("Error in disconnect:", error);
     }
-
-    // host гарвал эхний хүнийг host болгоно
-    if (room.hostId === playerId) {
-      room.hostId = Object.keys(room.players)[0];
-    }
-
-    emitRoomState(roomCode);
   });
 });
 
-server.listen(4000, () =>
-  console.log("✅ Socket server running: http://localhost:4000"),
-);
+// Graceful shutdown
+process.on("SIGTERM", () => {
+  console.log("SIGTERM received, closing server...");
+  server.close(() => {
+    console.log("Server closed");
+    process.exit(0);
+  });
+});
+
+// Server эхлүүлэх - 0.0.0.0 host ашиглах нь чухал
+server.listen(PORT, "0.0.0.0", () => {
+  console.log(`✅ Socket server running on port ${PORT}`);
+  console.log(`Environment: ${NODE_ENV}`);
+  console.log(`Allowed origins:`, allowedOrigins);
+});
