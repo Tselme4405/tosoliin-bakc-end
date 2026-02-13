@@ -8,6 +8,7 @@ const app = express();
 const PORT = process.env.PORT || 4000;
 const NODE_ENV = process.env.NODE_ENV || "development";
 const CLIENT_URL = process.env.CLIENT_URL || "http://localhost:3000";
+const DISCONNECT_GRACE_MS = Number(process.env.DISCONNECT_GRACE_MS || 15000);
 
 const normalizeOrigin = (u) => {
   if (!u) return u;
@@ -43,6 +44,7 @@ app.use(express.json());
 
 const rooms = new Map(); // roomCode -> room
 const playerToSocket = new Map(); // playerId -> Set(socket.id)
+const pendingDisconnects = new Map(); // playerId -> Timeout
 
 app.get("/health", (req, res) => {
   res.status(200).json({
@@ -73,12 +75,21 @@ const io = new Server(server, {
 });
 
 // ---------- Helpers ----------
-function createPlayerGameState(playerId, playerIndex) {
+function clearPendingDisconnect(playerId) {
+  const t = pendingDisconnects.get(playerId);
+  if (t) {
+    clearTimeout(t);
+    pendingDisconnects.delete(playerId);
+  }
+}
+
+function createPlayerGameState(clientPlayerId, slot) {
   const colors = ["#FF6B6B", "#4ECDC4", "#FFE66D", "#A8DADC"];
   return {
-    id: playerId,
-    playerId: playerIndex, // 1..4
-    x: 100 + (playerIndex - 1) * 80,
+    id: slot, // IMPORTANT: numeric slot 1..4 for frontend sprite selection
+    clientPlayerId, // original UUID
+    playerId: slot, // keep compatibility with old frontend naming
+    x: 100 + (slot - 1) * 80,
     y: 300,
     vx: 0,
     vy: 0,
@@ -87,7 +98,7 @@ function createPlayerGameState(playerId, playerIndex) {
     onGround: false,
     animFrame: 0,
     facingRight: true,
-    color: colors[(playerIndex - 1) % colors.length],
+    color: colors[(slot - 1) % colors.length],
     dead: false,
     standingOnPlayer: null,
   };
@@ -102,6 +113,27 @@ function ensureGameState(room) {
       gameStatus: room.started ? "playing" : "waiting",
     };
   }
+}
+
+function playerIndexOf(room, playerId) {
+  return room.playerOrder.indexOf(playerId) + 1;
+}
+
+function ensurePlayerState(room, playerId) {
+  ensureGameState(room);
+  const slot = playerIndexOf(room, playerId);
+  if (slot < 1) return null;
+
+  const prev = room.gameState.players[playerId];
+  if (!prev) {
+    room.gameState.players[playerId] = createPlayerGameState(playerId, slot);
+  } else {
+    // Normalize id/slot every time to keep frontend stable.
+    prev.id = slot;
+    prev.playerId = slot;
+    prev.clientPlayerId = playerId;
+  }
+  return room.gameState.players[playerId];
 }
 
 function emitRoomState(roomCode) {
@@ -124,23 +156,24 @@ function emitGameState(roomCode) {
   ensureGameState(room);
 
   const players = {};
-  for (const pid of Object.keys(room.players)) {
-    const idx = room.playerOrder.indexOf(pid) + 1;
-    players[pid] =
-      room.gameState.players?.[pid] ?? createPlayerGameState(pid, idx);
+  for (const pid of room.playerOrder) {
+    if (!room.players[pid]) continue;
+    players[pid] = ensurePlayerState(room, pid);
   }
 
   room.gameState = {
     players,
-    keyCollected: room.gameState.keyCollected || false,
-    playersAtDoor: room.gameState.playersAtDoor || [],
+    keyCollected: Boolean(room.gameState.keyCollected),
+    playersAtDoor: Array.isArray(room.gameState.playersAtDoor)
+      ? room.gameState.playersAtDoor
+      : [],
     gameStatus: room.started ? "playing" : "waiting",
   };
 
   io.to(roomCode).emit("gameState", room.gameState);
 }
 
-function disconnectPlayer(playerId, roomCode) {
+function disconnectPlayerSocketsOnly(playerId, roomCode) {
   const sockets = playerToSocket.get(playerId);
   if (!sockets) return;
 
@@ -162,9 +195,6 @@ function allPicked(room) {
 function allReady(room) {
   return Object.values(room.players).every((p) => p.ready);
 }
-function playerIndexOf(room, playerId) {
-  return room.playerOrder.indexOf(playerId) + 1;
-}
 
 function parseInputPayload(payload) {
   const raw = payload?.input ?? payload ?? {};
@@ -183,9 +213,7 @@ function applyPlayerInput(socket, payload) {
     const room = rooms.get(roomCode);
     if (!room || !room.started) return;
 
-    ensureGameState(room);
-
-    const player = room.gameState.players[playerId];
+    const player = ensurePlayerState(room, playerId);
     if (!player || player.dead) return;
 
     const { left, right, jump } = parseInputPayload(payload);
@@ -248,6 +276,8 @@ io.on("connection", (socket) => {
         return;
       }
 
+      clearPendingDisconnect(hostId);
+
       const room = {
         roomCode,
         maxPlayers: max,
@@ -276,8 +306,8 @@ io.on("connection", (socket) => {
 
       socket.emit("joinSuccess", {
         roomCode,
-        playerId: hostId,
-        playerIndex: 1,
+        playerId: hostId, // UUID
+        playerIndex: 1, // numeric slot
         message: "Host created room",
       });
     } catch (e) {
@@ -299,12 +329,18 @@ io.on("connection", (socket) => {
         return;
       }
 
+      clearPendingDisconnect(playerId);
+
+      // Allow rejoin of existing player even after start.
       if (room.started && !room.players[playerId]) {
         socket.emit("joinDenied", { message: "Game already started" });
         return;
       }
 
-      if (room.players[playerId]) disconnectPlayer(playerId, roomCode);
+      // If same logical player has stale sockets, detach them only.
+      if (room.players[playerId]) {
+        disconnectPlayerSocketsOnly(playerId, roomCode);
+      }
 
       const count = Object.keys(room.players).length;
       if (!room.players[playerId] && count >= room.maxPlayers) {
@@ -330,8 +366,8 @@ io.on("connection", (socket) => {
 
       socket.emit("joinSuccess", {
         roomCode,
-        playerId,
-        playerIndex: playerIndexOf(room, playerId),
+        playerId, // UUID
+        playerIndex: playerIndexOf(room, playerId), // numeric slot
         message: "Successfully joined room",
       });
     } catch (e) {
@@ -440,27 +476,39 @@ io.on("connection", (socket) => {
 
       playerToSocket.delete(playerId);
 
-      const room = rooms.get(roomCode);
-      if (!room) return;
+      // Grace period for page navigation/reconnect.
+      clearPendingDisconnect(playerId);
+      const timer = setTimeout(() => {
+        pendingDisconnects.delete(playerId);
 
-      delete room.players[playerId];
-      if (room.gameState?.players?.[playerId]) {
-        delete room.gameState.players[playerId];
-      }
+        const room = rooms.get(roomCode);
+        if (!room) return;
 
-      room.playerOrder = room.playerOrder.filter((x) => x !== playerId);
+        // If player reconnected during grace, keep them.
+        if (playerToSocket.has(playerId)) return;
+        if (!room.players[playerId]) return;
 
-      if (Object.keys(room.players).length === 0) {
-        rooms.delete(roomCode);
-        return;
-      }
+        delete room.players[playerId];
+        if (room.gameState?.players?.[playerId]) {
+          delete room.gameState.players[playerId];
+        }
 
-      if (room.hostId === playerId) {
-        room.hostId = Object.keys(room.players)[0];
-      }
+        room.playerOrder = room.playerOrder.filter((x) => x !== playerId);
 
-      emitRoomState(roomCode);
-      emitGameState(roomCode);
+        if (Object.keys(room.players).length === 0) {
+          rooms.delete(roomCode);
+          return;
+        }
+
+        if (room.hostId === playerId) {
+          room.hostId = Object.keys(room.players)[0];
+        }
+
+        emitRoomState(roomCode);
+        emitGameState(roomCode);
+      }, DISCONNECT_GRACE_MS);
+
+      pendingDisconnects.set(playerId, timer);
     } catch (e) {
       console.error("disconnect error:", e);
     }
