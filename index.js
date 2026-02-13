@@ -74,7 +74,85 @@ const io = new Server(server, {
   transports: ["websocket", "polling"],
 });
 
-// ---------- Helpers ----------
+// ---------------- Physics / World ----------------
+const WORLD = {
+  width: 6000,
+  // Keep this aligned with your frontend map1 virtual space.
+  // If needed, tune this to your rendered map height.
+  groundY: 620,
+  gravity: 0.6,
+  moveSpeed: 5,
+  jumpForce: -14,
+  maxFallSpeed: 18,
+  friction: 0.85,
+};
+
+// Same layout as your map1 GameData (based on groundY).
+function buildWorld1Platforms() {
+  const gy = WORLD.groundY;
+  return [
+    // Static
+    { x: 0, y: gy + 40, width: 250, height: 20 },
+    { x: 320, y: gy + 40, width: 60, height: 20 },
+    { x: 450, y: gy + 40, width: 60, height: 20 },
+    { x: 580, y: gy + 40, width: 60, height: 20 },
+    { x: 710, y: gy + 40, width: 60, height: 20 },
+    { x: 840, y: gy + 40, width: 80, height: 20 },
+    { x: 1100, y: gy - 20, width: 100, height: 20 },
+    { x: 1280, y: gy - 50, width: 80, height: 20 },
+    { x: 1440, y: gy - 70, width: 80, height: 20 },
+    { x: 1600, y: gy - 50, width: 80, height: 20 },
+    { x: 1760, y: gy - 20, width: 100, height: 20 },
+    { x: 2000, y: gy + 20, width: 50, height: 20 },
+    { x: 2120, y: gy + 40, width: 50, height: 20 },
+    { x: 2240, y: gy + 20, width: 50, height: 20 },
+    { x: 2360, y: gy + 40, width: 50, height: 20 },
+    { x: 2480, y: gy + 20, width: 50, height: 20 },
+    { x: 2600, y: gy + 40, width: 50, height: 20 },
+    { x: 2720, y: gy + 40, width: 120, height: 20 },
+    { x: 3020, y: gy - 90, width: 100, height: 20 },
+    { x: 3200, y: gy - 90, width: 100, height: 20 },
+    { x: 3380, y: gy - 60, width: 80, height: 20 },
+    { x: 3540, y: gy - 30, width: 80, height: 20 },
+    { x: 3700, y: gy + 40, width: 60, height: 20 },
+    { x: 3850, y: gy + 15, width: 60, height: 20 },
+    { x: 3990, y: gy + 40, width: 60, height: 20 },
+    { x: 4130, y: gy + 15, width: 60, height: 20 },
+    { x: 4270, y: gy + 40, width: 60, height: 20 },
+    { x: 4410, y: gy + 40, width: 150, height: 20 },
+    { x: 4760, y: gy - 100, width: 120, height: 20 },
+    { x: 4960, y: gy - 80, width: 80, height: 20 },
+    { x: 5120, y: gy - 50, width: 80, height: 20 },
+    { x: 5280, y: gy - 20, width: 80, height: 20 },
+    { x: 5440, y: gy + 20, width: 100, height: 20 },
+    { x: 5620, y: gy + 40, width: 200, height: 20 },
+
+    // Moving platform initial positions (treated as static colliders on server for now)
+    { x: 650, y: gy - 250, width: 70, height: 20 },
+    { x: 1120, y: gy - 60, width: 60, height: 20 },
+    { x: 1730, y: gy - 240, width: 60, height: 20 },
+    { x: 2410, y: gy - 90, width: 60, height: 20 },
+    { x: 2815, y: gy - 275, width: 60, height: 20 },
+
+    // Falling platform initial positions (also static here)
+    { x: 275, y: gy - 50, width: 55, height: 20 },
+    { x: 1225, y: gy - 15, width: 55, height: 20 },
+    { x: 2220, y: gy - 205, width: 55, height: 20 },
+  ];
+}
+
+const WORLD1_PLATFORMS = buildWorld1Platforms();
+
+function intersects(a, b) {
+  return (
+    a.x < b.x + b.width &&
+    a.x + a.width > b.x &&
+    a.y < b.y + b.height &&
+    a.y + a.height > b.y
+  );
+}
+
+// ---------------- Helpers ----------------
 function clearPendingDisconnect(playerId) {
   const t = pendingDisconnects.get(playerId);
   if (t) {
@@ -86,9 +164,10 @@ function clearPendingDisconnect(playerId) {
 function createPlayerGameState(clientPlayerId, slot) {
   const colors = ["#FF6B6B", "#4ECDC4", "#FFE66D", "#A8DADC"];
   return {
-    id: slot, // IMPORTANT: numeric slot 1..4 for frontend sprite selection
-    clientPlayerId, // original UUID
-    playerId: slot, // keep compatibility with old frontend naming
+    id: slot, // 1..4 for frontend sprite slot
+    clientPlayerId, // uuid
+    playerId: slot,
+    hero: null,
     x: 100 + (slot - 1) * 80,
     y: 300,
     vx: 0,
@@ -128,11 +207,13 @@ function ensurePlayerState(room, playerId) {
   if (!prev) {
     room.gameState.players[playerId] = createPlayerGameState(playerId, slot);
   } else {
-    // Normalize id/slot every time to keep frontend stable.
     prev.id = slot;
     prev.playerId = slot;
     prev.clientPlayerId = playerId;
   }
+
+  // keep hero synchronized for renderer
+  room.gameState.players[playerId].hero = room.players[playerId]?.hero ?? null;
   return room.gameState.players[playerId];
 }
 
@@ -205,6 +286,44 @@ function parseInputPayload(payload) {
   };
 }
 
+function resolvePlayerCollisions(room, selfId) {
+  const self = room.gameState.players[selfId];
+  if (!self) return;
+
+  for (const [otherId, other] of Object.entries(room.gameState.players)) {
+    if (otherId === selfId || !other || other.dead) continue;
+    if (!intersects(self, other)) continue;
+
+    const overlapX1 = self.x + self.width - other.x;
+    const overlapX2 = other.x + other.width - self.x;
+    const overlapY1 = self.y + self.height - other.y;
+    const overlapY2 = other.y + other.height - self.y;
+
+    const minOverlapX = Math.min(overlapX1, overlapX2);
+    const minOverlapY = Math.min(overlapY1, overlapY2);
+
+    if (minOverlapX < minOverlapY) {
+      const push = minOverlapX / 2;
+      if (self.x < other.x) {
+        self.x -= push;
+        other.x += push;
+      } else {
+        self.x += push;
+        other.x -= push;
+      }
+    } else {
+      const push = minOverlapY / 2;
+      if (self.y < other.y) {
+        self.y -= push;
+        self.vy = Math.min(self.vy, 0);
+      } else {
+        self.y += push;
+        self.vy = Math.max(self.vy, 0);
+      }
+    }
+  }
+}
+
 function applyPlayerInput(socket, payload) {
   try {
     const { roomCode, playerId } = socket.data;
@@ -218,33 +337,84 @@ function applyPlayerInput(socket, payload) {
 
     const { left, right, jump } = parseInputPayload(payload);
 
+    // Input
     if (left) {
-      player.vx = -5;
+      player.vx = -WORLD.moveSpeed;
       player.facingRight = false;
       player.animFrame = (player.animFrame + 1) % 4;
     } else if (right) {
-      player.vx = 5;
+      player.vx = WORLD.moveSpeed;
       player.facingRight = true;
       player.animFrame = (player.animFrame + 1) % 4;
     } else {
-      player.vx = 0;
+      player.vx *= WORLD.friction;
+      if (Math.abs(player.vx) < 0.1) player.vx = 0;
     }
 
     if (jump && player.onGround) {
-      player.vy = -15;
+      player.vy = WORLD.jumpForce;
       player.onGround = false;
     }
 
+    // ---- Horizontal step ----
+    const prevX = player.x;
     player.x += player.vx;
-    player.y += player.vy;
-    player.vy += 0.8;
+    player.x = Math.max(0, Math.min(player.x, WORLD.width - player.width));
 
-    const groundY = 550;
-    if (player.y >= groundY) {
-      player.y = groundY;
+    for (const plat of WORLD1_PLATFORMS) {
+      if (!intersects(player, plat)) continue;
+
+      if (player.vx > 0) {
+        player.x = plat.x - player.width;
+      } else if (player.vx < 0) {
+        player.x = plat.x + plat.width;
+      } else {
+        player.x = prevX;
+      }
+      player.vx = 0;
+    }
+
+    // ---- Vertical step ----
+    const prevY = player.y;
+    const prevBottom = prevY + player.height;
+
+    player.vy += WORLD.gravity;
+    if (player.vy > WORLD.maxFallSpeed) player.vy = WORLD.maxFallSpeed;
+    player.y += player.vy;
+    player.onGround = false;
+
+    for (const plat of WORLD1_PLATFORMS) {
+      if (!intersects(player, plat)) continue;
+
+      const currBottom = player.y + player.height;
+      const platTop = plat.y;
+      const platBottom = plat.y + plat.height;
+      const prevTop = prevY;
+
+      // Landing on top
+      if (prevBottom <= platTop && currBottom >= platTop && player.vy >= 0) {
+        player.y = platTop - player.height;
+        player.vy = 0;
+        player.onGround = true;
+        continue;
+      }
+
+      // Hitting underside
+      if (prevTop >= platBottom && player.y <= platBottom && player.vy < 0) {
+        player.y = platBottom;
+        player.vy = 0;
+      }
+    }
+
+    // Ground collision (IMPORTANT: compare feet, not top)
+    if (player.y + player.height >= WORLD.groundY) {
+      player.y = WORLD.groundY - player.height;
       player.vy = 0;
       player.onGround = true;
     }
+
+    // Player-player collision
+    resolvePlayerCollisions(room, playerId);
 
     emitGameState(roomCode);
   } catch (e) {
@@ -252,7 +422,7 @@ function applyPlayerInput(socket, payload) {
   }
 }
 
-// ---------- Socket.IO ----------
+// ---------------- Socket.IO ----------------
 io.on("connection", (socket) => {
   console.log("✅ Socket connected:", socket.id);
 
@@ -306,8 +476,8 @@ io.on("connection", (socket) => {
 
       socket.emit("joinSuccess", {
         roomCode,
-        playerId: hostId, // UUID
-        playerIndex: 1, // numeric slot
+        playerId: hostId,
+        playerIndex: 1,
         message: "Host created room",
       });
     } catch (e) {
@@ -331,13 +501,11 @@ io.on("connection", (socket) => {
 
       clearPendingDisconnect(playerId);
 
-      // Allow rejoin of existing player even after start.
       if (room.started && !room.players[playerId]) {
         socket.emit("joinDenied", { message: "Game already started" });
         return;
       }
 
-      // If same logical player has stale sockets, detach them only.
       if (room.players[playerId]) {
         disconnectPlayerSocketsOnly(playerId, roomCode);
       }
@@ -366,8 +534,8 @@ io.on("connection", (socket) => {
 
       socket.emit("joinSuccess", {
         roomCode,
-        playerId, // UUID
-        playerIndex: playerIndexOf(room, playerId), // numeric slot
+        playerId,
+        playerIndex: playerIndexOf(room, playerId),
         message: "Successfully joined room",
       });
     } catch (e) {
@@ -398,7 +566,9 @@ io.on("connection", (socket) => {
       room.players[playerId].hero = hero;
       room.players[playerId].ready = false;
 
+      ensurePlayerState(room, playerId);
       emitRoomState(roomCode);
+      emitGameState(roomCode);
     } catch (e) {
       console.error("selectHero error:", e);
     }
@@ -476,7 +646,6 @@ io.on("connection", (socket) => {
 
       playerToSocket.delete(playerId);
 
-      // Grace period for page navigation/reconnect.
       clearPendingDisconnect(playerId);
       const timer = setTimeout(() => {
         pendingDisconnects.delete(playerId);
@@ -484,7 +653,6 @@ io.on("connection", (socket) => {
         const room = rooms.get(roomCode);
         if (!room) return;
 
-        // If player reconnected during grace, keep them.
         if (playerToSocket.has(playerId)) return;
         if (!room.players[playerId]) return;
 
