@@ -74,12 +74,8 @@ const io = new Server(server, {
   transports: ["websocket", "polling"],
 });
 
-// ---------------- Physics / World ----------------
-const WORLD = {
-  width: 6000,
-  // Keep this aligned with your frontend map1 virtual space.
-  // If needed, tune this to your rendered map height.
-  groundY: 620,
+// ---------------- Physics / Worlds ----------------
+const BASE_PHYSICS = {
   gravity: 0.6,
   moveSpeed: 5,
   jumpForce: -14,
@@ -87,11 +83,9 @@ const WORLD = {
   friction: 0.85,
 };
 
-// Same layout as your map1 GameData (based on groundY).
 function buildWorld1Platforms() {
-  const gy = WORLD.groundY;
+  const gy = 620;
   return [
-    // Static
     { x: 0, y: gy + 40, width: 250, height: 20 },
     { x: 320, y: gy + 40, width: 60, height: 20 },
     { x: 450, y: gy + 40, width: 60, height: 20 },
@@ -127,21 +121,88 @@ function buildWorld1Platforms() {
     { x: 5440, y: gy + 20, width: 100, height: 20 },
     { x: 5620, y: gy + 40, width: 200, height: 20 },
 
-    // Moving platform initial positions (treated as static colliders on server for now)
     { x: 650, y: gy - 250, width: 70, height: 20 },
     { x: 1120, y: gy - 60, width: 60, height: 20 },
     { x: 1730, y: gy - 240, width: 60, height: 20 },
     { x: 2410, y: gy - 90, width: 60, height: 20 },
     { x: 2815, y: gy - 275, width: 60, height: 20 },
 
-    // Falling platform initial positions (also static here)
     { x: 275, y: gy - 50, width: 55, height: 20 },
     { x: 1225, y: gy - 15, width: 55, height: 20 },
     { x: 2220, y: gy - 205, width: 55, height: 20 },
   ];
 }
 
-const WORLD1_PLATFORMS = buildWorld1Platforms();
+function buildWorld2Platforms() {
+  const gy = 620;
+  return [
+    { x: 0, y: gy + 40, width: 8200, height: 20 }, // main ground
+  ];
+}
+
+function buildWorld2DangerButtons() {
+  const gy = 620;
+  return [
+    { x: 300, y: gy + 5, width: 40, height: 35 },
+    { x: 530, y: gy + 5, width: 40, height: 35 },
+    { x: 770, y: gy + 5, width: 40, height: 35 },
+    { x: 1010, y: gy + 5, width: 40, height: 35 },
+    { x: 1250, y: gy + 5, width: 40, height: 35 },
+    { x: 1490, y: gy + 5, width: 40, height: 35 },
+    { x: 1830, y: gy + 5, width: 40, height: 35 },
+    { x: 2070, y: gy + 5, width: 40, height: 35 },
+    { x: 2310, y: gy + 5, width: 40, height: 35 },
+    { x: 2550, y: gy + 5, width: 40, height: 35 },
+    { x: 2790, y: gy + 5, width: 40, height: 35 },
+    { x: 3060, y: gy + 5, width: 40, height: 35 },
+    { x: 3300, y: gy + 5, width: 40, height: 35 },
+    { x: 3540, y: gy + 5, width: 40, height: 35 },
+    { x: 3780, y: gy + 5, width: 40, height: 35 },
+    { x: 4020, y: gy + 5, width: 40, height: 35 },
+    { x: 4260, y: gy + 5, width: 40, height: 35 },
+    { x: 4500, y: gy + 5, width: 40, height: 35 },
+    { x: 4740, y: gy + 5, width: 40, height: 35 },
+    { x: 4980, y: gy + 5, width: 40, height: 35 },
+    { x: 5220, y: gy + 5, width: 40, height: 35 },
+    { x: 5460, y: gy + 5, width: 40, height: 35 },
+    { x: 5730, y: gy + 5, width: 40, height: 35 },
+    { x: 5970, y: gy + 5, width: 40, height: 35 },
+    { x: 6210, y: gy + 5, width: 40, height: 35 },
+    { x: 6450, y: gy + 5, width: 40, height: 35 },
+    { x: 6690, y: gy + 5, width: 40, height: 35 },
+    { x: 6930, y: gy + 5, width: 40, height: 35 },
+    { x: 7170, y: gy + 5, width: 40, height: 35 },
+    { x: 7410, y: gy + 5, width: 40, height: 35 },
+    { x: 7890, y: gy + 5, width: 40, height: 35 },
+  ];
+}
+
+const WORLDS = {
+  1: {
+    id: 1,
+    width: 6000,
+    groundY: 620,
+    ...BASE_PHYSICS,
+    platforms: buildWorld1Platforms(),
+    key: { x: 1950, y: 250, width: 40, height: 40 },
+    door: { x: 3030, y: 455, width: 55, height: 75 }, // lowered / reachable
+    dangerButtons: [],
+  },
+  2: {
+    id: 2,
+    width: 8200,
+    groundY: 620,
+    ...BASE_PHYSICS,
+    platforms: buildWorld2Platforms(),
+    key: { x: 3740, y: 340, width: 40, height: 40 },
+    door: { x: 4520, y: 545, width: 55, height: 75 },
+    dangerButtons: buildWorld2DangerButtons(),
+  },
+};
+
+function getWorld(worldId) {
+  return WORLDS[worldId] || WORLDS[1];
+}
 
 function intersects(a, b) {
   return (
@@ -164,8 +225,8 @@ function clearPendingDisconnect(playerId) {
 function createPlayerGameState(clientPlayerId, slot) {
   const colors = ["#FF6B6B", "#4ECDC4", "#FFE66D", "#A8DADC"];
   return {
-    id: slot, // 1..4 for frontend sprite slot
-    clientPlayerId, // uuid
+    id: slot,
+    clientPlayerId,
     playerId: slot,
     hero: null,
     x: 100 + (slot - 1) * 80,
@@ -190,6 +251,7 @@ function ensureGameState(room) {
       keyCollected: false,
       playersAtDoor: [],
       gameStatus: room.started ? "playing" : "waiting",
+      world: room.world || 1,
     };
   }
 }
@@ -212,7 +274,6 @@ function ensurePlayerState(room, playerId) {
     prev.clientPlayerId = playerId;
   }
 
-  // keep hero synchronized for renderer
   room.gameState.players[playerId].hero = room.players[playerId]?.hero ?? null;
   return room.gameState.players[playerId];
 }
@@ -226,6 +287,7 @@ function emitRoomState(roomCode) {
     maxPlayers: room.maxPlayers,
     hostId: room.hostId,
     started: room.started,
+    world: room.world || 1,
     players: room.players,
   });
 }
@@ -235,6 +297,7 @@ function emitGameState(roomCode) {
   if (!room) return;
 
   ensureGameState(room);
+  const world = getWorld(room.world);
 
   const players = {};
   for (const pid of room.playerOrder) {
@@ -248,7 +311,13 @@ function emitGameState(roomCode) {
     playersAtDoor: Array.isArray(room.gameState.playersAtDoor)
       ? room.gameState.playersAtDoor
       : [],
-    gameStatus: room.started ? "playing" : "waiting",
+    gameStatus: room.started
+      ? room.gameState.gameStatus || "playing"
+      : "waiting",
+    world: room.world || 1,
+    key: world.key,
+    door: world.door,
+    dangerButtons: world.dangerButtons,
   };
 
   io.to(roomCode).emit("gameState", room.gameState);
@@ -332,64 +401,60 @@ function applyPlayerInput(socket, payload) {
     const room = rooms.get(roomCode);
     if (!room || !room.started) return;
 
+    const world = getWorld(room.world);
     const player = ensurePlayerState(room, playerId);
     if (!player || player.dead) return;
 
     const { left, right, jump } = parseInputPayload(payload);
 
-    // Input
     if (left) {
-      player.vx = -WORLD.moveSpeed;
+      player.vx = -world.moveSpeed;
       player.facingRight = false;
       player.animFrame = (player.animFrame + 1) % 4;
     } else if (right) {
-      player.vx = WORLD.moveSpeed;
+      player.vx = world.moveSpeed;
       player.facingRight = true;
       player.animFrame = (player.animFrame + 1) % 4;
     } else {
-      player.vx *= WORLD.friction;
+      player.vx *= world.friction;
       if (Math.abs(player.vx) < 0.1) player.vx = 0;
     }
 
     if (jump && player.onGround) {
-      player.vy = WORLD.jumpForce;
+      player.vy = world.jumpForce;
       player.onGround = false;
     }
 
-    // ---- Horizontal step ----
+    // Horizontal step
     const prevX = player.x;
     player.x += player.vx;
-    player.x = Math.max(0, Math.min(player.x, WORLD.width - player.width));
+    player.x = Math.max(0, Math.min(player.x, world.width - player.width));
 
-    for (const plat of WORLD1_PLATFORMS) {
+    for (const plat of world.platforms) {
       if (!intersects(player, plat)) continue;
 
-      if (player.vx > 0) {
-        player.x = plat.x - player.width;
-      } else if (player.vx < 0) {
-        player.x = plat.x + plat.width;
-      } else {
-        player.x = prevX;
-      }
+      if (player.vx > 0) player.x = plat.x - player.width;
+      else if (player.vx < 0) player.x = plat.x + plat.width;
+      else player.x = prevX;
+
       player.vx = 0;
     }
 
-    // ---- Vertical step ----
+    // Vertical step
     const prevY = player.y;
     const prevBottom = prevY + player.height;
 
-    player.vy += WORLD.gravity;
-    if (player.vy > WORLD.maxFallSpeed) player.vy = WORLD.maxFallSpeed;
+    player.vy += world.gravity;
+    if (player.vy > world.maxFallSpeed) player.vy = world.maxFallSpeed;
     player.y += player.vy;
     player.onGround = false;
 
-    for (const plat of WORLD1_PLATFORMS) {
+    for (const plat of world.platforms) {
       if (!intersects(player, plat)) continue;
 
       const currBottom = player.y + player.height;
       const platTop = plat.y;
       const platBottom = plat.y + plat.height;
-      const prevTop = prevY;
 
       // Landing on top
       if (prevBottom <= platTop && currBottom >= platTop && player.vy >= 0) {
@@ -400,21 +465,54 @@ function applyPlayerInput(socket, payload) {
       }
 
       // Hitting underside
-      if (prevTop >= platBottom && player.y <= platBottom && player.vy < 0) {
+      if (prevY >= platBottom && player.y <= platBottom && player.vy < 0) {
         player.y = platBottom;
         player.vy = 0;
       }
     }
 
-    // Ground collision (IMPORTANT: compare feet, not top)
-    if (player.y + player.height >= WORLD.groundY) {
-      player.y = WORLD.groundY - player.height;
+    // Ground
+    if (player.y + player.height >= world.groundY) {
+      player.y = world.groundY - player.height;
       player.vy = 0;
       player.onGround = true;
     }
 
     // Player-player collision
     resolvePlayerCollisions(room, playerId);
+
+    // Key collect
+    if (!room.gameState.keyCollected && intersects(player, world.key)) {
+      room.gameState.keyCollected = true;
+    }
+
+    // World2 danger buttons => dead
+    if (room.world === 2) {
+      const touchedDanger = world.dangerButtons.some((b) =>
+        intersects(player, b),
+      );
+      if (touchedDanger) {
+        room.gameState.gameStatus = "dead";
+      }
+    }
+
+    // Door / win
+    if (room.gameState.keyCollected) {
+      const atDoor = [];
+      for (const [pid, p] of Object.entries(room.gameState.players)) {
+        if (intersects(p, world.door)) atDoor.push(pid);
+      }
+      room.gameState.playersAtDoor = atDoor.map(
+        (pid) => Number(room.gameState.players[pid].id) || 0,
+      );
+
+      const aliveCount = Object.keys(room.players).length;
+      if (aliveCount > 0 && atDoor.length === aliveCount) {
+        room.gameState.gameStatus = "won";
+      } else if (room.gameState.gameStatus !== "dead") {
+        room.gameState.gameStatus = "playing";
+      }
+    }
 
     emitGameState(roomCode);
   } catch (e) {
@@ -453,10 +551,9 @@ io.on("connection", (socket) => {
         maxPlayers: max,
         hostId,
         started: false,
+        world: 1,
         playerOrder: [hostId],
-        players: {
-          [hostId]: { hero: null, ready: false },
-        },
+        players: { [hostId]: { hero: null, ready: false } },
         gameState: null,
       };
 
@@ -483,6 +580,27 @@ io.on("connection", (socket) => {
     } catch (e) {
       console.error("createRoom error:", e);
       socket.emit("createDenied", "Server error");
+    }
+  });
+
+  // Host can pick world before start
+  socket.on("setWorld", ({ world }) => {
+    try {
+      const { roomCode, playerId } = socket.data;
+      if (!roomCode || !playerId) return;
+
+      const room = rooms.get(roomCode);
+      if (!room) return;
+      if (room.hostId !== playerId) return;
+      if (room.started) return;
+
+      room.world = Number(world) === 2 ? 2 : 1;
+      room.gameState = null; // regenerate state for selected world
+
+      emitRoomState(roomCode);
+      emitGameState(roomCode);
+    } catch (e) {
+      console.error("setWorld error:", e);
     }
   });
 
@@ -620,6 +738,7 @@ io.on("connection", (socket) => {
       }
 
       room.started = true;
+      room.gameState = null;
       io.to(roomCode).emit("startGame");
 
       emitRoomState(roomCode);
@@ -631,7 +750,7 @@ io.on("connection", (socket) => {
   });
 
   socket.on("playerInput", (payload) => applyPlayerInput(socket, payload));
-  socket.on("playerMove", (payload) => applyPlayerInput(socket, payload)); // compatibility
+  socket.on("playerMove", (payload) => applyPlayerInput(socket, payload));
 
   socket.on("disconnect", () => {
     try {
