@@ -1,4 +1,3 @@
-// server/index.js
 const express = require("express");
 const http = require("http");
 const cors = require("cors");
@@ -6,27 +5,35 @@ const { Server } = require("socket.io");
 
 const app = express();
 
-// Environment variables
 const PORT = process.env.PORT || 4000;
 const NODE_ENV = process.env.NODE_ENV || "development";
 const CLIENT_URL = process.env.CLIENT_URL || "http://localhost:3000";
 
-// CORS
+const normalizeOrigin = (u) => {
+  if (!u) return u;
+  return u.trim().replace(/\/+$/, "");
+};
+
 const allowedOrigins = [
   "http://localhost:3000",
   "http://localhost:3001",
   "http://localhost:5173",
-  CLIENT_URL,
-].filter(Boolean);
+  ...CLIENT_URL.split(","),
+]
+  .map(normalizeOrigin)
+  .filter(Boolean);
+
+function isOriginAllowed(origin) {
+  if (!origin) return true;
+  if (NODE_ENV === "development") return true;
+  return allowedOrigins.includes(normalizeOrigin(origin));
+}
 
 app.use(
   cors({
-    origin(origin, callback) {
-      if (!origin) return callback(null, true);
-      if (allowedOrigins.includes(origin) || NODE_ENV === "development") {
-        return callback(null, true);
-      }
-      return callback(new Error("Not allowed by CORS"));
+    origin(origin, cb) {
+      if (isOriginAllowed(origin)) return cb(null, true);
+      return cb(new Error("Not allowed by CORS"));
     },
     credentials: true,
   }),
@@ -47,15 +54,16 @@ app.get("/health", (req, res) => {
   });
 });
 
-app.get("/", (req, res) => {
-  res.json({ message: "Game Server Running" });
-});
+app.get("/", (req, res) => res.json({ message: "Game Server Running" }));
 
 const server = http.createServer(app);
 
 const io = new Server(server, {
   cors: {
-    origin: allowedOrigins,
+    origin(origin, cb) {
+      if (isOriginAllowed(origin)) return cb(null, true);
+      return cb(new Error("Not allowed by CORS"));
+    },
     credentials: true,
     methods: ["GET", "POST"],
   },
@@ -64,12 +72,12 @@ const io = new Server(server, {
   transports: ["websocket", "polling"],
 });
 
-// --- Helpers ---
+// ---------- Helpers ----------
 function createPlayerGameState(playerId, playerIndex) {
   const colors = ["#FF6B6B", "#4ECDC4", "#FFE66D", "#A8DADC"];
   return {
     id: playerId,
-    playerId: playerIndex,
+    playerId: playerIndex, // 1..4
     x: 100 + (playerIndex - 1) * 80,
     y: 300,
     vx: 0,
@@ -85,6 +93,17 @@ function createPlayerGameState(playerId, playerIndex) {
   };
 }
 
+function ensureGameState(room) {
+  if (!room.gameState) {
+    room.gameState = {
+      players: {},
+      keyCollected: false,
+      playersAtDoor: [],
+      gameStatus: room.started ? "playing" : "waiting",
+    };
+  }
+}
+
 function emitRoomState(roomCode) {
   const room = rooms.get(roomCode);
   if (!room) return;
@@ -98,17 +117,6 @@ function emitRoomState(roomCode) {
   });
 }
 
-function ensureGameState(room) {
-  if (!room.gameState) {
-    room.gameState = {
-      players: {},
-      keyCollected: false,
-      playersAtDoor: [],
-      gameStatus: room.started ? "playing" : "waiting",
-    };
-  }
-}
-
 function emitGameState(roomCode) {
   const room = rooms.get(roomCode);
   if (!room) return;
@@ -116,15 +124,10 @@ function emitGameState(roomCode) {
   ensureGameState(room);
 
   const players = {};
-  let idx = 1;
-
   for (const pid of Object.keys(room.players)) {
-    if (room.gameState.players?.[pid]) {
-      players[pid] = room.gameState.players[pid];
-    } else {
-      players[pid] = createPlayerGameState(pid, idx);
-    }
-    idx++;
+    const idx = room.playerOrder.indexOf(pid) + 1;
+    players[pid] =
+      room.gameState.players?.[pid] ?? createPlayerGameState(pid, idx);
   }
 
   room.gameState = {
@@ -135,12 +138,6 @@ function emitGameState(roomCode) {
   };
 
   io.to(roomCode).emit("gameState", room.gameState);
-
-  console.log(`📤 gameState -> ${roomCode}`, {
-    started: room.started,
-    gameStatus: room.gameState.gameStatus,
-    playerCount: Object.keys(players).length,
-  });
 }
 
 function disconnectPlayer(playerId, roomCode) {
@@ -159,46 +156,104 @@ function disconnectPlayer(playerId, roomCode) {
   playerToSocket.delete(playerId);
 }
 
-// ✅ AUTO START checker
-function maybeAutoStart(roomCode) {
-  const room = rooms.get(roomCode);
-  if (!room) return;
-
-  if (room.started) return;
-
-  const count = Object.keys(room.players).length;
-  if (count !== room.maxPlayers) return;
-
-  // optional: hero/ready шаардвал энд шалгана
-  // const allPicked = Object.values(room.players).every(p => p.hero);
-  // const allReady = Object.values(room.players).every(p => p.ready);
-  // if (!allPicked || !allReady) return;
-
-  room.started = true;
-  io.to(roomCode).emit("startGame"); // optional event
-  console.log(`🚀 Auto-started room ${roomCode}`);
+function allPicked(room) {
+  return Object.values(room.players).every((p) => p.hero);
+}
+function allReady(room) {
+  return Object.values(room.players).every((p) => p.ready);
+}
+function playerIndexOf(room, playerId) {
+  return room.playerOrder.indexOf(playerId) + 1;
 }
 
-// --- Socket.IO ---
+function parseInputPayload(payload) {
+  const raw = payload?.input ?? payload ?? {};
+  return {
+    left: Boolean(raw.left),
+    right: Boolean(raw.right),
+    jump: Boolean(raw.jump),
+  };
+}
+
+function applyPlayerInput(socket, payload) {
+  try {
+    const { roomCode, playerId } = socket.data;
+    if (!roomCode || !playerId) return;
+
+    const room = rooms.get(roomCode);
+    if (!room || !room.started) return;
+
+    ensureGameState(room);
+
+    const player = room.gameState.players[playerId];
+    if (!player || player.dead) return;
+
+    const { left, right, jump } = parseInputPayload(payload);
+
+    if (left) {
+      player.vx = -5;
+      player.facingRight = false;
+      player.animFrame = (player.animFrame + 1) % 4;
+    } else if (right) {
+      player.vx = 5;
+      player.facingRight = true;
+      player.animFrame = (player.animFrame + 1) % 4;
+    } else {
+      player.vx = 0;
+    }
+
+    if (jump && player.onGround) {
+      player.vy = -15;
+      player.onGround = false;
+    }
+
+    player.x += player.vx;
+    player.y += player.vy;
+    player.vy += 0.8;
+
+    const groundY = 550;
+    if (player.y >= groundY) {
+      player.y = groundY;
+      player.vy = 0;
+      player.onGround = true;
+    }
+
+    emitGameState(roomCode);
+  } catch (e) {
+    console.error("playerInput error:", e);
+  }
+}
+
+// ---------- Socket.IO ----------
 io.on("connection", (socket) => {
-  console.log(`✅ Socket connected: ${socket.id}`);
+  console.log("✅ Socket connected:", socket.id);
 
   socket.on("createRoom", ({ roomCode, maxPlayers, hostId }) => {
     try {
-      if (!roomCode || !maxPlayers || !hostId) {
-        socket.emit("createDenied", { message: "Invalid parameters" });
+      const max = Number(maxPlayers);
+
+      if (
+        !roomCode ||
+        !hostId ||
+        !Number.isInteger(max) ||
+        max < 1 ||
+        max > 4
+      ) {
+        socket.emit("createDenied", "Invalid parameters");
         return;
       }
+
       if (rooms.has(roomCode)) {
-        socket.emit("createDenied", { message: "Room code already exists" });
+        socket.emit("createDenied", "Room code already exists");
         return;
       }
 
       const room = {
         roomCode,
-        maxPlayers,
+        maxPlayers: max,
         hostId,
         started: false,
+        playerOrder: [hostId],
         players: {
           [hostId]: { hero: null, ready: false },
         },
@@ -214,19 +269,29 @@ io.on("connection", (socket) => {
       if (!playerToSocket.has(hostId)) playerToSocket.set(hostId, new Set());
       playerToSocket.get(hostId).add(socket.id);
 
-      console.log(`📝 Room created: ${roomCode} by ${hostId}`);
+      console.log("📝 Room created:", roomCode, "by", hostId);
 
       emitRoomState(roomCode);
       emitGameState(roomCode);
+
+      socket.emit("joinSuccess", {
+        roomCode,
+        playerId: hostId,
+        playerIndex: 1,
+        message: "Host created room",
+      });
     } catch (e) {
-      console.error("Error in createRoom:", e);
-      socket.emit("createDenied", { message: "Server error" });
+      console.error("createRoom error:", e);
+      socket.emit("createDenied", "Server error");
     }
   });
 
   socket.on("joinRoom", ({ roomCode, playerId }) => {
     try {
-      console.log(`🔗 Join request - Room: ${roomCode}, Player: ${playerId}`);
+      if (!roomCode || !playerId) {
+        socket.emit("joinDenied", { message: "Invalid parameters" });
+        return;
+      }
 
       const room = rooms.get(roomCode);
       if (!room) {
@@ -234,16 +299,12 @@ io.on("connection", (socket) => {
         return;
       }
 
-      // started бол join хориглоно (чи хүсвэл allow reconnect гэж өөрчилж болно)
-      if (room.started) {
+      if (room.started && !room.players[playerId]) {
         socket.emit("joinDenied", { message: "Game already started" });
         return;
       }
 
-      // өмнө нь нэгдсэн байвал хуучин sockets салгана
-      if (room.players[playerId]) {
-        disconnectPlayer(playerId, roomCode);
-      }
+      if (room.players[playerId]) disconnectPlayer(playerId, roomCode);
 
       const count = Object.keys(room.players).length;
       if (!room.players[playerId] && count >= room.maxPlayers) {
@@ -253,6 +314,7 @@ io.on("connection", (socket) => {
 
       if (!room.players[playerId]) {
         room.players[playerId] = { hero: null, ready: false };
+        room.playerOrder.push(playerId);
       }
 
       socket.join(roomCode);
@@ -263,21 +325,17 @@ io.on("connection", (socket) => {
         playerToSocket.set(playerId, new Set());
       playerToSocket.get(playerId).add(socket.id);
 
-      console.log(`✅ Player ${playerId} joined room ${roomCode}`);
-
-      // ✅ AUTO START when full
-      maybeAutoStart(roomCode);
-
       emitRoomState(roomCode);
       emitGameState(roomCode);
 
       socket.emit("joinSuccess", {
         roomCode,
         playerId,
+        playerIndex: playerIndexOf(room, playerId),
         message: "Successfully joined room",
       });
     } catch (e) {
-      console.error("Error in joinRoom:", e);
+      console.error("joinRoom error:", e);
       socket.emit("joinDenied", { message: "Server error" });
     }
   });
@@ -306,7 +364,7 @@ io.on("connection", (socket) => {
 
       emitRoomState(roomCode);
     } catch (e) {
-      console.error("Error in selectHero:", e);
+      console.error("selectHero error:", e);
     }
   });
 
@@ -318,22 +376,18 @@ io.on("connection", (socket) => {
       const room = rooms.get(roomCode);
       if (!room) return;
 
-      const player = room.players[playerId];
-      if (!player) return;
+      const p = room.players[playerId];
+      if (!p) return;
 
-      if (!player.hero) {
+      if (!p.hero) {
         socket.emit("readyDenied", { message: "Choose hero first" });
         return;
       }
 
-      player.ready = Boolean(ready);
-
+      p.ready = Boolean(ready);
       emitRoomState(roomCode);
-
-      // optional: бүх хүн ready болсон үед auto-start хийх бол:
-      // maybeAutoStart(roomCode); emitGameState(roomCode);
     } catch (e) {
-      console.error("Error in setReady:", e);
+      console.error("setReady error:", e);
     }
   });
 
@@ -350,9 +404,12 @@ io.on("connection", (socket) => {
         return;
       }
 
-      const allPicked = Object.values(room.players).every((p) => p.hero);
-      if (!allPicked) {
+      if (!allPicked(room)) {
         socket.emit("startDenied", { message: "Everyone must pick a hero" });
+        return;
+      }
+      if (!allReady(room)) {
+        socket.emit("startDenied", { message: "Everyone must be ready" });
         return;
       }
 
@@ -362,61 +419,15 @@ io.on("connection", (socket) => {
       emitRoomState(roomCode);
       emitGameState(roomCode);
     } catch (e) {
-      console.error("Error in startGameNow:", e);
+      console.error("startGameNow error:", e);
       socket.emit("startDenied", { message: "Server error" });
     }
   });
 
-  socket.on("playerInput", (input) => {
-    try {
-      const { roomCode, playerId } = socket.data;
-      if (!roomCode || !playerId) return;
-
-      const room = rooms.get(roomCode);
-      if (!room) return;
-
-      ensureGameState(room);
-
-      const player = room.gameState.players[playerId];
-      if (!player || player.dead) return;
-
-      if (input.left) {
-        player.vx = -5;
-        player.facingRight = false;
-        player.animFrame = (player.animFrame + 1) % 4;
-      } else if (input.right) {
-        player.vx = 5;
-        player.facingRight = true;
-        player.animFrame = (player.animFrame + 1) % 4;
-      } else {
-        player.vx = 0;
-      }
-
-      if (input.jump && player.onGround) {
-        player.vy = -15;
-        player.onGround = false;
-      }
-
-      player.x += player.vx;
-      player.y += player.vy;
-      player.vy += 0.8;
-
-      const groundY = 550;
-      if (player.y >= groundY) {
-        player.y = groundY;
-        player.vy = 0;
-        player.onGround = true;
-      }
-
-      emitGameState(roomCode);
-    } catch (e) {
-      console.error("Error in playerInput:", e);
-    }
-  });
+  socket.on("playerInput", (payload) => applyPlayerInput(socket, payload));
+  socket.on("playerMove", (payload) => applyPlayerInput(socket, payload)); // compatibility
 
   socket.on("disconnect", () => {
-    console.log(`🔌 Socket disconnected: ${socket.id}`);
-
     try {
       const { roomCode, playerId } = socket.data;
       if (!roomCode || !playerId) return;
@@ -425,7 +436,6 @@ io.on("connection", (socket) => {
       if (!sockets) return;
 
       sockets.delete(socket.id);
-
       if (sockets.size > 0) return;
 
       playerToSocket.delete(playerId);
@@ -434,40 +444,31 @@ io.on("connection", (socket) => {
       if (!room) return;
 
       delete room.players[playerId];
-      if (room.gameState?.players?.[playerId])
+      if (room.gameState?.players?.[playerId]) {
         delete room.gameState.players[playerId];
+      }
+
+      room.playerOrder = room.playerOrder.filter((x) => x !== playerId);
 
       if (Object.keys(room.players).length === 0) {
         rooms.delete(roomCode);
-        console.log(`🗑️ Room ${roomCode} deleted (empty)`);
         return;
       }
 
       if (room.hostId === playerId) {
         room.hostId = Object.keys(room.players)[0];
-        console.log(`👑 New host: ${room.hostId} in room ${roomCode}`);
       }
 
-      // ✅ started байхад хүн гарвал started=true хэвээр үлдээнэ
       emitRoomState(roomCode);
       emitGameState(roomCode);
     } catch (e) {
-      console.error("Error in disconnect:", e);
+      console.error("disconnect error:", e);
     }
-  });
-});
-
-// Graceful shutdown
-process.on("SIGTERM", () => {
-  console.log("SIGTERM received, closing server...");
-  server.close(() => {
-    console.log("Server closed");
-    process.exit(0);
   });
 });
 
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`✅ Socket server running on port ${PORT}`);
   console.log(`🌍 Environment: ${NODE_ENV}`);
-  console.log(`🔓 Allowed origins:`, allowedOrigins);
+  console.log("🔓 Allowed origins:", allowedOrigins);
 });
