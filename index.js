@@ -7,11 +7,7 @@ const app = express();
 
 const PORT = Number(process.env.PORT || 4000);
 const NODE_ENV = process.env.NODE_ENV || "development";
-
-// ✅ Render дээр заавал тавих зөв хувьсагч:
-// CLIENT_URL=https://yourapp.vercel.app,https://yourapp-git-main-xxxx.vercel.app
 const CLIENT_URL = process.env.CLIENT_URL || "http://localhost:3000";
-
 const DISCONNECT_GRACE_MS = Number(process.env.DISCONNECT_GRACE_MS || 15000);
 
 const normalizeOrigin = (u) => {
@@ -33,20 +29,12 @@ const allowedOrigins = [
   .map(normalizeOrigin)
   .filter(Boolean);
 
-// ✅ Production дээр Vercel preview домэйнүүд байнга өөрчлөгддөг тул *.vercel.app зөвшөөрнө.
-// Хэрвээ илүү хатуу болгох бол доорх includes("your-project") хэлбэрээр чангатгаж болно.
 function isOriginAllowed(origin) {
   if (!origin) return true;
-
   const o = normalizeOrigin(origin);
 
-  // Dev үед бүгд зөвшөөрнө
   if (NODE_ENV === "development") return true;
-
-  // Allowlist-оор зөвшөөрнө
   if (allowedOrigins.includes(o)) return true;
-
-  // ✅ Vercel домэйнүүд (preview + prod)
   if (o.endsWith(".vercel.app")) return true;
 
   return false;
@@ -55,7 +43,6 @@ function isOriginAllowed(origin) {
 function corsOriginDelegate(origin, cb) {
   if (isOriginAllowed(origin)) return cb(null, true);
 
-  // Render log дээр яг ямар origin блоклогдсоныг харуулна
   console.log("❌ CORS blocked origin:", origin);
   console.log("✅ Allowed origins:", allowedOrigins);
 
@@ -113,8 +100,11 @@ const BASE_PHYSICS = {
   friction: 0.85,
 };
 
-const PLAYER_WIDTH = 25;
-const PLAYER_HEIGHT = 35;
+// Keep this aligned with frontend constants.
+const PLAYER_WIDTH = 35;
+const PLAYER_HEIGHT = 45;
+
+// Shared world baseline (backend + frontend must match).
 const WORLD_BASE_Y = 620;
 const WORLD_MAIN_FLOOR_Y = WORLD_BASE_Y + 40;
 
@@ -156,6 +146,7 @@ function buildWorld1Platforms() {
     { x: 5440, y: gy + 20, width: 100, height: 20 },
     { x: 5620, y: gy + 40, width: 200, height: 20 },
 
+    // Keep these static unless backend actually simulates moving/falling platforms.
     { x: 650, y: gy - 250, width: 70, height: 20 },
     { x: 1120, y: gy - 60, width: 60, height: 20 },
     { x: 1730, y: gy - 240, width: 60, height: 20 },
@@ -475,6 +466,7 @@ function applyPlayerInput(socket, payload) {
       player.onGround = false;
     }
 
+    // Horizontal step
     const prevX = player.x;
     player.x += player.vx;
     player.x = Math.max(0, Math.min(player.x, world.width - player.width));
@@ -489,6 +481,7 @@ function applyPlayerInput(socket, payload) {
       player.vx = 0;
     }
 
+    // Vertical step
     const prevY = player.y;
     const prevBottom = prevY + player.height;
 
@@ -504,6 +497,7 @@ function applyPlayerInput(socket, payload) {
       const platTop = plat.y;
       const platBottom = plat.y + plat.height;
 
+      // Landing on top
       if (prevBottom <= platTop && currBottom >= platTop && player.vy >= 0) {
         player.y = platTop - player.height;
         player.vy = 0;
@@ -511,12 +505,14 @@ function applyPlayerInput(socket, payload) {
         continue;
       }
 
+      // Hitting underside
       if (prevY >= platBottom && player.y <= platBottom && player.vy < 0) {
         player.y = platBottom;
         player.vy = 0;
       }
     }
 
+    // Main floor clamp
     if (player.y + player.height >= world.groundY) {
       player.y = world.groundY - player.height;
       player.vy = 0;
