@@ -7,7 +7,11 @@ const app = express();
 
 const PORT = Number(process.env.PORT || 4000);
 const NODE_ENV = process.env.NODE_ENV || "development";
+
+// ✅ Render дээр заавал тавих зөв хувьсагч:
+// CLIENT_URL=https://yourapp.vercel.app,https://yourapp-git-main-xxxx.vercel.app
 const CLIENT_URL = process.env.CLIENT_URL || "http://localhost:3000";
+
 const DISCONNECT_GRACE_MS = Number(process.env.DISCONNECT_GRACE_MS || 15000);
 
 const normalizeOrigin = (u) => {
@@ -15,44 +19,73 @@ const normalizeOrigin = (u) => {
   return String(u).trim().replace(/\/+$/, "");
 };
 
+const clientOriginsFromEnv = String(CLIENT_URL)
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+
 const allowedOrigins = [
   "http://localhost:3000",
   "http://localhost:3001",
   "http://localhost:5173",
-  ...CLIENT_URL.split(","),
+  ...clientOriginsFromEnv,
 ]
   .map(normalizeOrigin)
   .filter(Boolean);
 
+// ✅ Production дээр Vercel preview домэйнүүд байнга өөрчлөгддөг тул *.vercel.app зөвшөөрнө.
+// Хэрвээ илүү хатуу болгох бол доорх includes("your-project") хэлбэрээр чангатгаж болно.
 function isOriginAllowed(origin) {
   if (!origin) return true;
+
+  const o = normalizeOrigin(origin);
+
+  // Dev үед бүгд зөвшөөрнө
   if (NODE_ENV === "development") return true;
-  return allowedOrigins.includes(normalizeOrigin(origin));
+
+  // Allowlist-оор зөвшөөрнө
+  if (allowedOrigins.includes(o)) return true;
+
+  // ✅ Vercel домэйнүүд (preview + prod)
+  if (o.endsWith(".vercel.app")) return true;
+
+  return false;
+}
+
+function corsOriginDelegate(origin, cb) {
+  if (isOriginAllowed(origin)) return cb(null, true);
+
+  // Render log дээр яг ямар origin блоклогдсоныг харуулна
+  console.log("❌ CORS blocked origin:", origin);
+  console.log("✅ Allowed origins:", allowedOrigins);
+
+  return cb(new Error("Not allowed by CORS"));
 }
 
 app.use(
   cors({
-    origin(origin, cb) {
-      if (isOriginAllowed(origin)) return cb(null, true);
-      return cb(new Error("Not allowed by CORS"));
-    },
+    origin: corsOriginDelegate,
     credentials: true,
   }),
 );
 
 app.use(express.json());
 
+// ---------------- In-memory state ----------------
 const rooms = new Map(); // roomCode -> room
 const playerToSocket = new Map(); // playerId -> Set(socket.id)
 const pendingDisconnects = new Map(); // playerId -> Timeout
 
+// ---------------- Health / Root ----------------
 app.get("/health", (req, res) => {
   res.status(200).json({
     status: "ok",
+    env: NODE_ENV,
     uptime: process.uptime(),
     timestamp: Date.now(),
     rooms: rooms.size,
     players: playerToSocket.size,
+    allowedOrigins,
   });
 });
 
@@ -62,10 +95,7 @@ const server = http.createServer(app);
 
 const io = new Server(server, {
   cors: {
-    origin(origin, cb) {
-      if (isOriginAllowed(origin)) return cb(null, true);
-      return cb(new Error("Not allowed by CORS"));
-    },
+    origin: corsOriginDelegate,
     credentials: true,
     methods: ["GET", "POST"],
   },
@@ -85,8 +115,8 @@ const BASE_PHYSICS = {
 
 const PLAYER_WIDTH = 35;
 const PLAYER_HEIGHT = 45;
-const WORLD_BASE_Y = 620; // geometry baseline
-const WORLD_MAIN_FLOOR_Y = WORLD_BASE_Y + 40; // floor platform top
+const WORLD_BASE_Y = 620;
+const WORLD_MAIN_FLOOR_Y = WORLD_BASE_Y + 40;
 
 function buildWorld1Platforms() {
   const gy = WORLD_BASE_Y;
@@ -427,7 +457,6 @@ function applyPlayerInput(socket, payload) {
 
     const { left, right, jump } = parseInputPayload(payload);
 
-    // Horizontal input
     if (left) {
       player.vx = -world.moveSpeed;
       player.facingRight = false;
@@ -441,13 +470,11 @@ function applyPlayerInput(socket, payload) {
       if (Math.abs(player.vx) < 0.1) player.vx = 0;
     }
 
-    // Jump
     if (jump && player.onGround) {
       player.vy = world.jumpForce;
       player.onGround = false;
     }
 
-    // Horizontal step
     const prevX = player.x;
     player.x += player.vx;
     player.x = Math.max(0, Math.min(player.x, world.width - player.width));
@@ -462,7 +489,6 @@ function applyPlayerInput(socket, payload) {
       player.vx = 0;
     }
 
-    // Vertical step
     const prevY = player.y;
     const prevBottom = prevY + player.height;
 
@@ -478,7 +504,6 @@ function applyPlayerInput(socket, payload) {
       const platTop = plat.y;
       const platBottom = plat.y + plat.height;
 
-      // Landing from above
       if (prevBottom <= platTop && currBottom >= platTop && player.vy >= 0) {
         player.y = platTop - player.height;
         player.vy = 0;
@@ -486,29 +511,24 @@ function applyPlayerInput(socket, payload) {
         continue;
       }
 
-      // Hit underside
       if (prevY >= platBottom && player.y <= platBottom && player.vy < 0) {
         player.y = platBottom;
         player.vy = 0;
       }
     }
 
-    // Main floor clamp
     if (player.y + player.height >= world.groundY) {
       player.y = world.groundY - player.height;
       player.vy = 0;
       player.onGround = true;
     }
 
-    // Player-player collision
     resolvePlayerCollisions(room, playerId);
 
-    // Key
     if (!room.gameState.keyCollected && intersects(player, world.key)) {
       room.gameState.keyCollected = true;
     }
 
-    // World2 death buttons
     if (room.world === 2) {
       const touchedDanger = world.dangerButtons.some((b) =>
         intersects(player, b),
@@ -518,7 +538,6 @@ function applyPlayerInput(socket, payload) {
       }
     }
 
-    // Door / win
     if (room.gameState.keyCollected) {
       const atDoor = [];
       for (const [pid, p] of Object.entries(room.gameState.players)) {
@@ -798,9 +817,8 @@ io.on("connection", (socket) => {
         if (!room.players[playerId]) return;
 
         delete room.players[playerId];
-        if (room.gameState?.players?.[playerId]) {
+        if (room.gameState?.players?.[playerId])
           delete room.gameState.players[playerId];
-        }
 
         room.playerOrder = room.playerOrder.filter((x) => x !== playerId);
 
@@ -828,4 +846,5 @@ server.listen(PORT, "0.0.0.0", () => {
   console.log(`✅ Socket server running on port ${PORT}`);
   console.log(`🌍 Environment: ${NODE_ENV}`);
   console.log("🔓 Allowed origins:", allowedOrigins);
+  console.log("🔧 CLIENT_URL env:", CLIENT_URL);
 });
