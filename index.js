@@ -5,14 +5,14 @@ const { Server } = require("socket.io");
 
 const app = express();
 
-const PORT = process.env.PORT || 4000;
+const PORT = Number(process.env.PORT || 4000);
 const NODE_ENV = process.env.NODE_ENV || "development";
 const CLIENT_URL = process.env.CLIENT_URL || "http://localhost:3000";
 const DISCONNECT_GRACE_MS = Number(process.env.DISCONNECT_GRACE_MS || 15000);
 
 const normalizeOrigin = (u) => {
   if (!u) return u;
-  return u.trim().replace(/\/+$/, "");
+  return String(u).trim().replace(/\/+$/, "");
 };
 
 const allowedOrigins = [
@@ -83,10 +83,10 @@ const BASE_PHYSICS = {
   friction: 0.85,
 };
 
-const PLAYER_WIDTH = 45;
-const PLAYER_HEIGHT = 55;
-const WORLD_BASE_Y = 620; // used by level geometry builders
-const WORLD_GROUND_Y = WORLD_BASE_Y + 40; // MUST match floor platform y
+const PLAYER_WIDTH = 35;
+const PLAYER_HEIGHT = 45;
+const WORLD_BASE_Y = 620; // geometry baseline
+const WORLD_MAIN_FLOOR_Y = WORLD_BASE_Y + 40; // floor platform top
 
 function buildWorld1Platforms() {
   const gy = WORLD_BASE_Y;
@@ -184,7 +184,7 @@ const WORLDS = {
   1: {
     id: 1,
     width: 6000,
-    groundY: WORLD_GROUND_Y,
+    groundY: WORLD_MAIN_FLOOR_Y,
     ...BASE_PHYSICS,
     platforms: buildWorld1Platforms(),
     key: { x: 1950, y: 250, width: 40, height: 40 },
@@ -194,7 +194,7 @@ const WORLDS = {
   2: {
     id: 2,
     width: 8200,
-    groundY: WORLD_GROUND_Y,
+    groundY: WORLD_MAIN_FLOOR_Y,
     ...BASE_PHYSICS,
     platforms: buildWorld2Platforms(),
     key: { x: 3740, y: 340, width: 40, height: 40 },
@@ -204,7 +204,7 @@ const WORLDS = {
 };
 
 function getWorld(worldId) {
-  return WORLDS[worldId] || WORLDS[1];
+  return WORLDS[Number(worldId)] || WORLDS[1];
 }
 
 function intersects(a, b) {
@@ -263,6 +263,15 @@ function playerIndexOf(room, playerId) {
   return room.playerOrder.indexOf(playerId) + 1;
 }
 
+function clampPlayerToWorld(player, world) {
+  player.width = PLAYER_WIDTH;
+  player.height = PLAYER_HEIGHT;
+  player.x = Math.max(0, Math.min(player.x, world.width - player.width));
+  if (!Number.isFinite(player.y)) {
+    player.y = world.groundY - player.height;
+  }
+}
+
 function ensurePlayerState(room, playerId) {
   ensureGameState(room);
   const slot = playerIndexOf(room, playerId);
@@ -281,8 +290,7 @@ function ensurePlayerState(room, playerId) {
     prev.id = slot;
     prev.playerId = slot;
     prev.clientPlayerId = playerId;
-    prev.width = PLAYER_WIDTH;
-    prev.height = PLAYER_HEIGHT;
+    clampPlayerToWorld(prev, world);
   }
 
   room.gameState.players[playerId].hero = room.players[playerId]?.hero ?? null;
@@ -353,6 +361,7 @@ function disconnectPlayerSocketsOnly(playerId, roomCode) {
 function allPicked(room) {
   return Object.values(room.players).every((p) => p.hero);
 }
+
 function allReady(room) {
   return Object.values(room.players).every((p) => p.ready);
 }
@@ -418,6 +427,7 @@ function applyPlayerInput(socket, payload) {
 
     const { left, right, jump } = parseInputPayload(payload);
 
+    // Horizontal input
     if (left) {
       player.vx = -world.moveSpeed;
       player.facingRight = false;
@@ -431,6 +441,7 @@ function applyPlayerInput(socket, payload) {
       if (Math.abs(player.vx) < 0.1) player.vx = 0;
     }
 
+    // Jump
     if (jump && player.onGround) {
       player.vy = world.jumpForce;
       player.onGround = false;
@@ -467,7 +478,7 @@ function applyPlayerInput(socket, payload) {
       const platTop = plat.y;
       const platBottom = plat.y + plat.height;
 
-      // Landing on top
+      // Landing from above
       if (prevBottom <= platTop && currBottom >= platTop && player.vy >= 0) {
         player.y = platTop - player.height;
         player.vy = 0;
@@ -475,26 +486,29 @@ function applyPlayerInput(socket, payload) {
         continue;
       }
 
-      // Hitting underside
+      // Hit underside
       if (prevY >= platBottom && player.y <= platBottom && player.vy < 0) {
         player.y = platBottom;
         player.vy = 0;
       }
     }
 
-    // Ground clamp (aligned with platform floor y)
+    // Main floor clamp
     if (player.y + player.height >= world.groundY) {
       player.y = world.groundY - player.height;
       player.vy = 0;
       player.onGround = true;
     }
 
+    // Player-player collision
     resolvePlayerCollisions(room, playerId);
 
+    // Key
     if (!room.gameState.keyCollected && intersects(player, world.key)) {
       room.gameState.keyCollected = true;
     }
 
+    // World2 death buttons
     if (room.world === 2) {
       const touchedDanger = world.dangerButtons.some((b) =>
         intersects(player, b),
@@ -504,6 +518,7 @@ function applyPlayerInput(socket, payload) {
       }
     }
 
+    // Door / win
     if (room.gameState.keyCollected) {
       const atDoor = [];
       for (const [pid, p] of Object.entries(room.gameState.players)) {
@@ -520,6 +535,8 @@ function applyPlayerInput(socket, payload) {
       } else if (room.gameState.gameStatus !== "dead") {
         room.gameState.gameStatus = "playing";
       }
+    } else if (room.gameState.gameStatus !== "dead") {
+      room.gameState.gameStatus = "playing";
     }
 
     emitGameState(roomCode);
