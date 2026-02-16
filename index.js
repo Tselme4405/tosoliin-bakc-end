@@ -176,7 +176,7 @@ function buildWorld2DangerButtons() {
     { x: 7890, y: gy + 5, width: 40, height: 35 },
   ];
 }
-
+//frnufrunufnuvf
 const WORLDS = {
   1: {
     id: 1,
