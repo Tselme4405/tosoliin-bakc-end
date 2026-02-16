@@ -113,8 +113,8 @@ const BASE_PHYSICS = {
   friction: 0.85,
 };
 
-const PLAYER_WIDTH = 35;
-const PLAYER_HEIGHT = 45;
+const PLAYER_WIDTH = 25;
+const PLAYER_HEIGHT = 35;
 const WORLD_BASE_Y = 620;
 const WORLD_MAIN_FLOOR_Y = WORLD_BASE_Y + 40;
 
