@@ -1,3 +1,4 @@
+// server.js
 const express = require("express");
 const http = require("http");
 const cors = require("cors");
@@ -9,11 +10,10 @@ const PORT = Number(process.env.PORT || 4000);
 const NODE_ENV = process.env.NODE_ENV || "development";
 const CLIENT_URL = process.env.CLIENT_URL || "http://localhost:3000";
 const DISCONNECT_GRACE_MS = Number(process.env.DISCONNECT_GRACE_MS || 15000);
+const TICK_RATE = Number(process.env.TICK_RATE || 30);
 
-const normalizeOrigin = (u) => {
-  if (!u) return u;
-  return String(u).trim().replace(/\/+$/, "");
-};
+// ---------------- CORS ----------------
+const normalizeOrigin = (u) => (u ? String(u).trim().replace(/\/+$/, "") : u);
 
 const clientOriginsFromEnv = String(CLIENT_URL)
   .split(",")
@@ -32,20 +32,16 @@ const allowedOrigins = [
 function isOriginAllowed(origin) {
   if (!origin) return true;
   const o = normalizeOrigin(origin);
-
   if (NODE_ENV === "development") return true;
   if (allowedOrigins.includes(o)) return true;
   if (o.endsWith(".vercel.app")) return true;
-
   return false;
 }
 
 function corsOriginDelegate(origin, cb) {
   if (isOriginAllowed(origin)) return cb(null, true);
-
   console.log("❌ CORS blocked origin:", origin);
   console.log("✅ Allowed origins:", allowedOrigins);
-
   return cb(new Error("Not allowed by CORS"));
 }
 
@@ -55,7 +51,6 @@ app.use(
     credentials: true,
   }),
 );
-
 app.use(express.json());
 
 // ---------------- In-memory state ----------------
@@ -63,7 +58,7 @@ const rooms = new Map(); // roomCode -> room
 const playerToSocket = new Map(); // playerId -> Set(socket.id)
 const pendingDisconnects = new Map(); // playerId -> Timeout
 
-// ---------------- Health / Root ----------------
+// ---------------- Health ----------------
 app.get("/health", (req, res) => {
   res.status(200).json({
     status: "ok",
@@ -72,6 +67,7 @@ app.get("/health", (req, res) => {
     timestamp: Date.now(),
     rooms: rooms.size,
     players: playerToSocket.size,
+    tickRate: TICK_RATE,
     allowedOrigins,
   });
 });
@@ -91,7 +87,7 @@ const io = new Server(server, {
   transports: ["websocket", "polling"],
 });
 
-// ---------------- Physics / Worlds ----------------
+// ---------------- Constants ----------------
 const BASE_PHYSICS = {
   gravity: 0.6,
   moveSpeed: 5,
@@ -100,14 +96,28 @@ const BASE_PHYSICS = {
   friction: 0.85,
 };
 
-// Keep this aligned with frontend constants.
 const PLAYER_WIDTH = 35;
 const PLAYER_HEIGHT = 45;
 
-// Shared world baseline (backend + frontend must match).
 const WORLD_BASE_Y = 620;
 const WORLD_MAIN_FLOOR_Y = WORLD_BASE_Y + 40;
 
+const clamp = (n, min, max) => Math.max(min, Math.min(max, n));
+const sanitizeName = (v) =>
+  String(v ?? "")
+    .trim()
+    .slice(0, 20);
+
+function intersects(a, b) {
+  return (
+    a.x < b.x + b.width &&
+    a.x + a.width > b.x &&
+    a.y < b.y + b.height &&
+    a.y + a.height > b.y
+  );
+}
+
+// ---------------- Worlds ----------------
 function buildWorld1Platforms() {
   const gy = WORLD_BASE_Y;
   return [
@@ -146,16 +156,68 @@ function buildWorld1Platforms() {
     { x: 5440, y: gy + 20, width: 100, height: 20 },
     { x: 5620, y: gy + 40, width: 200, height: 20 },
 
-    // Keep these static unless backend actually simulates moving/falling platforms.
-    { x: 650, y: gy - 250, width: 70, height: 20 },
-    { x: 1120, y: gy - 60, width: 60, height: 20 },
-    { x: 1730, y: gy - 240, width: 60, height: 20 },
-    { x: 2410, y: gy - 90, width: 60, height: 20 },
-    { x: 2815, y: gy - 275, width: 60, height: 20 },
-
     { x: 275, y: gy - 50, width: 55, height: 20 },
     { x: 1225, y: gy - 15, width: 55, height: 20 },
     { x: 2220, y: gy - 205, width: 55, height: 20 },
+  ];
+}
+
+function buildWorld1MovingPlatforms() {
+  const gy = WORLD_BASE_Y;
+  return [
+    {
+      x: 650,
+      y: gy - 250,
+      width: 70,
+      height: 20,
+      startX: 620,
+      endX: 780,
+      speed: 2,
+      direction: 1,
+    },
+    {
+      x: 1120,
+      y: gy - 60,
+      width: 60,
+      height: 20,
+      startX: 1080,
+      endX: 1240,
+      speed: 1.8,
+      direction: 1,
+    },
+  ];
+}
+
+function buildWorld1FallingPlatforms() {
+  const gy = WORLD_BASE_Y;
+  return [
+    {
+      x: 1730,
+      y: gy - 240,
+      width: 60,
+      height: 20,
+      originalY: gy - 240,
+      falling: false,
+      fallTimer: 0,
+    },
+    {
+      x: 2410,
+      y: gy - 90,
+      width: 60,
+      height: 20,
+      originalY: gy - 90,
+      falling: false,
+      fallTimer: 0,
+    },
+    {
+      x: 2815,
+      y: gy - 275,
+      width: 60,
+      height: 20,
+      originalY: gy - 275,
+      falling: false,
+      fallTimer: 0,
+    },
   ];
 }
 
@@ -208,6 +270,8 @@ const WORLDS = {
     groundY: WORLD_MAIN_FLOOR_Y,
     ...BASE_PHYSICS,
     platforms: buildWorld1Platforms(),
+    movingPlatforms: buildWorld1MovingPlatforms(),
+    fallingPlatforms: buildWorld1FallingPlatforms(),
     key: { x: 1950, y: 250, width: 40, height: 40 },
     door: { x: 3030, y: 455, width: 55, height: 75 },
     dangerButtons: [],
@@ -218,6 +282,8 @@ const WORLDS = {
     groundY: WORLD_MAIN_FLOOR_Y,
     ...BASE_PHYSICS,
     platforms: buildWorld2Platforms(),
+    movingPlatforms: [],
+    fallingPlatforms: [],
     key: { x: 3740, y: 340, width: 40, height: 40 },
     door: { x: 4520, y: 545, width: 55, height: 75 },
     dangerButtons: buildWorld2DangerButtons(),
@@ -228,13 +294,24 @@ function getWorld(worldId) {
   return WORLDS[Number(worldId)] || WORLDS[1];
 }
 
-function intersects(a, b) {
-  return (
-    a.x < b.x + b.width &&
-    a.x + a.width > b.x &&
-    a.y < b.y + b.height &&
-    a.y + a.height > b.y
-  );
+function cloneWorldRuntime(worldId) {
+  const w = getWorld(worldId);
+  return {
+    id: w.id,
+    width: w.width,
+    groundY: w.groundY,
+    gravity: w.gravity,
+    moveSpeed: w.moveSpeed,
+    jumpForce: w.jumpForce,
+    maxFallSpeed: w.maxFallSpeed,
+    friction: w.friction,
+    platforms: w.platforms.map((p) => ({ ...p })),
+    movingPlatforms: w.movingPlatforms.map((p) => ({ ...p })),
+    fallingPlatforms: w.fallingPlatforms.map((p) => ({ ...p })),
+    key: { ...w.key },
+    door: { ...w.door },
+    dangerButtons: w.dangerButtons.map((d) => ({ ...d })),
+  };
 }
 
 // ---------------- Helpers ----------------
@@ -246,15 +323,20 @@ function clearPendingDisconnect(playerId) {
   }
 }
 
-function createPlayerGameState(clientPlayerId, slot, world) {
+function playerIndexOf(room, playerId) {
+  return room.playerOrder.indexOf(playerId) + 1;
+}
+
+function createPlayerGameState(clientPlayerId, slot, room) {
   const colors = ["#FF6B6B", "#4ECDC4", "#FFE66D", "#A8DADC"];
   return {
     id: slot,
     clientPlayerId,
     playerId: slot,
-    hero: null,
+    hero: room.players[clientPlayerId]?.hero ?? null,
+    name: room.players[clientPlayerId]?.name ?? "",
     x: 100 + (slot - 1) * 80,
-    y: world.groundY - PLAYER_HEIGHT,
+    y: room.worldRuntime.groundY - PLAYER_HEIGHT,
     vx: 0,
     vy: 0,
     width: PLAYER_WIDTH,
@@ -268,99 +350,38 @@ function createPlayerGameState(clientPlayerId, slot, world) {
   };
 }
 
-function ensureGameState(room) {
-  if (!room.gameState) {
-    room.gameState = {
-      players: {},
-      keyCollected: false,
-      playersAtDoor: [],
-      gameStatus: room.started ? "playing" : "waiting",
-      world: room.world || 1,
-    };
-  }
-}
-
-function playerIndexOf(room, playerId) {
-  return room.playerOrder.indexOf(playerId) + 1;
-}
-
-function clampPlayerToWorld(player, world) {
-  player.width = PLAYER_WIDTH;
-  player.height = PLAYER_HEIGHT;
-  player.x = Math.max(0, Math.min(player.x, world.width - player.width));
-  if (!Number.isFinite(player.y)) {
-    player.y = world.groundY - player.height;
-  }
-}
-
 function ensurePlayerState(room, playerId) {
-  ensureGameState(room);
   const slot = playerIndexOf(room, playerId);
   if (slot < 1) return null;
 
-  const world = getWorld(room.world);
-  const prev = room.gameState.players[playerId];
-
-  if (!prev) {
+  if (!room.gameState.players[playerId]) {
     room.gameState.players[playerId] = createPlayerGameState(
       playerId,
       slot,
-      world,
+      room,
     );
-  } else {
-    prev.id = slot;
-    prev.playerId = slot;
-    prev.clientPlayerId = playerId;
-    clampPlayerToWorld(prev, world);
   }
 
-  room.gameState.players[playerId].hero = room.players[playerId]?.hero ?? null;
-  return room.gameState.players[playerId];
+  const p = room.gameState.players[playerId];
+  p.id = slot;
+  p.playerId = slot;
+  p.clientPlayerId = playerId;
+  p.hero = room.players[playerId]?.hero ?? null;
+  p.name = room.players[playerId]?.name ?? "";
+  p.width = PLAYER_WIDTH;
+  p.height = PLAYER_HEIGHT;
+  p.x = clamp(p.x, 0, room.worldRuntime.width - p.width);
+  if (!Number.isFinite(p.y)) p.y = room.worldRuntime.groundY - p.height;
+
+  return p;
 }
 
-function emitRoomState(roomCode) {
-  const room = rooms.get(roomCode);
-  if (!room) return;
-
-  io.to(roomCode).emit("roomState", {
-    roomCode: room.roomCode,
-    maxPlayers: room.maxPlayers,
-    hostId: room.hostId,
-    started: room.started,
-    world: room.world || 1,
-    players: room.players,
-  });
+function allPicked(room) {
+  return Object.values(room.players).every((p) => p.hero);
 }
 
-function emitGameState(roomCode) {
-  const room = rooms.get(roomCode);
-  if (!room) return;
-
-  ensureGameState(room);
-  const world = getWorld(room.world);
-
-  const players = {};
-  for (const pid of room.playerOrder) {
-    if (!room.players[pid]) continue;
-    players[pid] = ensurePlayerState(room, pid);
-  }
-
-  room.gameState = {
-    players,
-    keyCollected: Boolean(room.gameState.keyCollected),
-    playersAtDoor: Array.isArray(room.gameState.playersAtDoor)
-      ? room.gameState.playersAtDoor
-      : [],
-    gameStatus: room.started
-      ? room.gameState.gameStatus || "playing"
-      : "waiting",
-    world: room.world || 1,
-    key: world.key,
-    door: world.door,
-    dangerButtons: world.dangerButtons,
-  };
-
-  io.to(roomCode).emit("gameState", room.gameState);
+function allReady(room) {
+  return Object.values(room.players).every((p) => p.ready);
 }
 
 function disconnectPlayerSocketsOnly(playerId, roomCode) {
@@ -379,14 +400,53 @@ function disconnectPlayerSocketsOnly(playerId, roomCode) {
   playerToSocket.delete(playerId);
 }
 
-function allPicked(room) {
-  return Object.values(room.players).every((p) => p.hero);
+function emitRoomState(roomCode) {
+  const room = rooms.get(roomCode);
+  if (!room) return;
+
+  io.to(roomCode).emit("roomState", {
+    roomCode: room.roomCode,
+    maxPlayers: room.maxPlayers,
+    hostId: room.hostId,
+    started: room.started,
+    world: room.world,
+    players: room.players,
+  });
 }
 
-function allReady(room) {
-  return Object.values(room.players).every((p) => p.ready);
+function emitGameState(roomCode) {
+  const room = rooms.get(roomCode);
+  if (!room) return;
+
+  const world = room.worldRuntime;
+  const players = {};
+
+  for (const pid of room.playerOrder) {
+    if (!room.players[pid]) continue;
+    players[pid] = ensurePlayerState(room, pid);
+  }
+
+  room.gameState.players = players;
+
+  io.to(roomCode).emit("gameState", {
+    players: room.gameState.players,
+    keyCollected: Boolean(room.gameState.keyCollected),
+    playersAtDoor: Array.isArray(room.gameState.playersAtDoor)
+      ? room.gameState.playersAtDoor
+      : [],
+    gameStatus: room.started
+      ? room.gameState.gameStatus || "playing"
+      : "waiting",
+    world: room.world,
+    key: world.key,
+    door: world.door,
+    dangerButtons: world.dangerButtons,
+    movingPlatforms: world.movingPlatforms,
+    fallingPlatforms: world.fallingPlatforms,
+  });
 }
 
+// ---------------- Simulation ----------------
 function parseInputPayload(payload) {
   const raw = payload?.input ?? payload?.keys ?? payload ?? {};
   return {
@@ -434,139 +494,212 @@ function resolvePlayerCollisions(room, selfId) {
   }
 }
 
-function applyPlayerInput(socket, payload) {
-  try {
-    const { roomCode, playerId } = socket.data;
-    if (!roomCode || !playerId) return;
+function updateWorldRuntime(room) {
+  const world = room.worldRuntime;
 
-    const room = rooms.get(roomCode);
-    if (!room || !room.started) return;
-
-    const world = getWorld(room.world);
-    const player = ensurePlayerState(room, playerId);
-    if (!player || player.dead) return;
-
-    const { left, right, jump } = parseInputPayload(payload);
-
-    if (left) {
-      player.vx = -world.moveSpeed;
-      player.facingRight = false;
-      player.animFrame = (player.animFrame + 1) % 4;
-    } else if (right) {
-      player.vx = world.moveSpeed;
-      player.facingRight = true;
-      player.animFrame = (player.animFrame + 1) % 4;
-    } else {
-      player.vx *= world.friction;
-      if (Math.abs(player.vx) < 0.1) player.vx = 0;
+  world.movingPlatforms.forEach((mp) => {
+    mp.x += mp.speed * mp.direction;
+    if (mp.x <= mp.startX || mp.x >= mp.endX) {
+      mp.direction *= -1;
+      mp.x = clamp(mp.x, mp.startX, mp.endX);
     }
+  });
 
-    if (jump && player.onGround) {
-      player.vy = world.jumpForce;
-      player.onGround = false;
+  world.fallingPlatforms.forEach((fp) => {
+    if (fp.falling) {
+      fp.fallTimer += 1;
+      if (fp.fallTimer > 30) fp.y += 8;
     }
-
-    // Horizontal step
-    const prevX = player.x;
-    player.x += player.vx;
-    player.x = Math.max(0, Math.min(player.x, world.width - player.width));
-
-    for (const plat of world.platforms) {
-      if (!intersects(player, plat)) continue;
-
-      if (player.vx > 0) player.x = plat.x - player.width;
-      else if (player.vx < 0) player.x = plat.x + plat.width;
-      else player.x = prevX;
-
-      player.vx = 0;
-    }
-
-    // Vertical step
-    const prevY = player.y;
-    const prevBottom = prevY + player.height;
-
-    player.vy += world.gravity;
-    if (player.vy > world.maxFallSpeed) player.vy = world.maxFallSpeed;
-    player.y += player.vy;
-    player.onGround = false;
-
-    for (const plat of world.platforms) {
-      if (!intersects(player, plat)) continue;
-
-      const currBottom = player.y + player.height;
-      const platTop = plat.y;
-      const platBottom = plat.y + plat.height;
-
-      // Landing on top
-      if (prevBottom <= platTop && currBottom >= platTop && player.vy >= 0) {
-        player.y = platTop - player.height;
-        player.vy = 0;
-        player.onGround = true;
-        continue;
-      }
-
-      // Hitting underside
-      if (prevY >= platBottom && player.y <= platBottom && player.vy < 0) {
-        player.y = platBottom;
-        player.vy = 0;
-      }
-    }
-
-    // Main floor clamp
-    if (player.y + player.height >= world.groundY) {
-      player.y = world.groundY - player.height;
-      player.vy = 0;
-      player.onGround = true;
-    }
-
-    resolvePlayerCollisions(room, playerId);
-
-    if (!room.gameState.keyCollected && intersects(player, world.key)) {
-      room.gameState.keyCollected = true;
-    }
-
-    if (room.world === 2) {
-      const touchedDanger = world.dangerButtons.some((b) =>
-        intersects(player, b),
-      );
-      if (touchedDanger) {
-        room.gameState.gameStatus = "dead";
-      }
-    }
-
-    if (room.gameState.keyCollected) {
-      const atDoor = [];
-      for (const [pid, p] of Object.entries(room.gameState.players)) {
-        if (intersects(p, world.door)) atDoor.push(pid);
-      }
-
-      room.gameState.playersAtDoor = atDoor.map(
-        (pid) => Number(room.gameState.players[pid].id) || 0,
-      );
-
-      const aliveCount = Object.keys(room.players).length;
-      if (aliveCount > 0 && atDoor.length === aliveCount) {
-        room.gameState.gameStatus = "won";
-      } else if (room.gameState.gameStatus !== "dead") {
-        room.gameState.gameStatus = "playing";
-      }
-    } else if (room.gameState.gameStatus !== "dead") {
-      room.gameState.gameStatus = "playing";
-    }
-
-    emitGameState(roomCode);
-  } catch (e) {
-    console.error("playerInput error:", e);
-  }
+  });
 }
 
-// ---------------- Socket.IO ----------------
+function platformListForCollisions(world) {
+  const visibleFalling = world.fallingPlatforms.filter(
+    (fp) => fp.y < world.groundY + 300,
+  );
+  return [...world.platforms, ...world.movingPlatforms, ...visibleFalling];
+}
+
+function applyPlayerStep(room, playerId) {
+  const world = room.worldRuntime;
+  const player = ensurePlayerState(room, playerId);
+  if (!player || player.dead) return;
+
+  const input = room.inputs[playerId] || {
+    left: false,
+    right: false,
+    jump: false,
+  };
+
+  if (input.left) {
+    player.vx = -world.moveSpeed;
+    player.facingRight = false;
+    player.animFrame = (player.animFrame + 1) % 4;
+  } else if (input.right) {
+    player.vx = world.moveSpeed;
+    player.facingRight = true;
+    player.animFrame = (player.animFrame + 1) % 4;
+  } else {
+    player.vx *= world.friction;
+    if (Math.abs(player.vx) < 0.1) player.vx = 0;
+    player.animFrame = 0;
+  }
+
+  if (input.jump && player.onGround) {
+    player.vy = world.jumpForce;
+    player.onGround = false;
+  }
+
+  // Horizontal
+  const plats = platformListForCollisions(world);
+  const prevX = player.x;
+  player.x += player.vx;
+  player.x = clamp(player.x, 0, world.width - player.width);
+
+  for (const plat of plats) {
+    if (!intersects(player, plat)) continue;
+    if (player.vx > 0) player.x = plat.x - player.width;
+    else if (player.vx < 0) player.x = plat.x + plat.width;
+    else player.x = prevX;
+    player.vx = 0;
+  }
+
+  // Vertical
+  const prevY = player.y;
+  const prevBottom = prevY + player.height;
+  player.vy += world.gravity;
+  player.vy = Math.min(player.vy, world.maxFallSpeed);
+  player.y += player.vy;
+  player.onGround = false;
+
+  for (const plat of plats) {
+    if (!intersects(player, plat)) continue;
+
+    const currBottom = player.y + player.height;
+    const platTop = plat.y;
+    const platBottom = plat.y + plat.height;
+
+    if (prevBottom <= platTop && currBottom >= platTop && player.vy >= 0) {
+      player.y = platTop - player.height;
+      player.vy = 0;
+      player.onGround = true;
+
+      const fp = world.fallingPlatforms.find(
+        (x) => x.x === plat.x && x.y === plat.y,
+      );
+      if (fp && !fp.falling) fp.falling = true;
+      continue;
+    }
+
+    if (prevY >= platBottom && player.y <= platBottom && player.vy < 0) {
+      player.y = platBottom;
+      player.vy = 0;
+    }
+  }
+
+  if (player.y + player.height >= world.groundY) {
+    player.y = world.groundY - player.height;
+    player.vy = 0;
+    player.onGround = true;
+  }
+
+  if (player.y > world.groundY + 300) {
+    player.dead = true;
+    room.gameState.gameStatus = "dead";
+  }
+
+  resolvePlayerCollisions(room, playerId);
+}
+
+function evaluateGameState(room) {
+  const world = room.worldRuntime;
+  const players = room.gameState.players;
+  const playerIds = room.playerOrder.filter((pid) => room.players[pid]);
+
+  if (!room.gameState.keyCollected) {
+    for (const pid of playerIds) {
+      const p = players[pid];
+      if (p && !p.dead && intersects(p, world.key)) {
+        room.gameState.keyCollected = true;
+        break;
+      }
+    }
+  }
+
+  if (room.world === 2 && room.gameState.gameStatus !== "dead") {
+    for (const pid of playerIds) {
+      const p = players[pid];
+      if (!p || p.dead) continue;
+      const touchedDanger = world.dangerButtons.some((b) => intersects(p, b));
+      if (touchedDanger) {
+        room.gameState.gameStatus = "dead";
+        break;
+      }
+    }
+  }
+
+  if (room.gameState.gameStatus === "dead") return;
+
+  if (room.gameState.keyCollected) {
+    const atDoor = [];
+    for (const pid of playerIds) {
+      const p = players[pid];
+      if (!p || p.dead) continue;
+      if (intersects(p, world.door)) atDoor.push(pid);
+    }
+
+    room.gameState.playersAtDoor = atDoor.map(
+      (pid) => Number(players[pid]?.id) || 0,
+    );
+
+    if (playerIds.length > 0 && atDoor.length === playerIds.length) {
+      room.gameState.gameStatus = "won";
+      return;
+    }
+  }
+
+  room.gameState.gameStatus = "playing";
+}
+
+function stepRoom(roomCode) {
+  const room = rooms.get(roomCode);
+  if (!room || !room.started) return;
+
+  updateWorldRuntime(room);
+
+  for (const pid of room.playerOrder) {
+    if (!room.players[pid]) continue;
+    applyPlayerStep(room, pid);
+  }
+
+  evaluateGameState(room);
+  emitGameState(roomCode);
+}
+
+function startRoomLoop(roomCode) {
+  const room = rooms.get(roomCode);
+  if (!room) return;
+  if (room.loopHandle) return;
+
+  const tickMs = Math.max(10, Math.floor(1000 / TICK_RATE));
+  room.loopHandle = setInterval(() => stepRoom(roomCode), tickMs);
+}
+
+function stopRoomLoop(roomCode) {
+  const room = rooms.get(roomCode);
+  if (!room || !room.loopHandle) return;
+  clearInterval(room.loopHandle);
+  room.loopHandle = null;
+}
+
+// ---------------- Socket ----------------
 io.on("connection", (socket) => {
   console.log("✅ Socket connected:", socket.id);
 
-  socket.on("createRoom", ({ roomCode, maxPlayers, hostId }) => {
+  socket.on("createRoom", ({ roomCode, maxPlayers, hostId, playerName }) => {
     try {
       const max = Number(maxPlayers);
+      const name = sanitizeName(playerName);
 
       if (
         !roomCode ||
@@ -592,9 +725,20 @@ io.on("connection", (socket) => {
         hostId,
         started: false,
         world: 1,
+        worldRuntime: cloneWorldRuntime(1),
         playerOrder: [hostId],
-        players: { [hostId]: { hero: null, ready: false } },
-        gameState: null,
+        players: {
+          [hostId]: { hero: null, ready: false, name: name || `Player 1` },
+        },
+        gameState: {
+          players: {},
+          keyCollected: false,
+          playersAtDoor: [],
+          gameStatus: "waiting",
+          world: 1,
+        },
+        inputs: {},
+        loopHandle: null,
       };
 
       rooms.set(roomCode, room);
@@ -627,12 +771,18 @@ io.on("connection", (socket) => {
       if (!roomCode || !playerId) return;
 
       const room = rooms.get(roomCode);
-      if (!room) return;
-      if (room.hostId !== playerId) return;
-      if (room.started) return;
+      if (!room || room.hostId !== playerId || room.started) return;
 
       room.world = Number(world) === 2 ? 2 : 1;
-      room.gameState = null;
+      room.worldRuntime = cloneWorldRuntime(room.world);
+
+      room.gameState = {
+        players: {},
+        keyCollected: false,
+        playersAtDoor: [],
+        gameStatus: "waiting",
+        world: room.world,
+      };
 
       emitRoomState(roomCode);
       emitGameState(roomCode);
@@ -641,7 +791,7 @@ io.on("connection", (socket) => {
     }
   });
 
-  socket.on("joinRoom", ({ roomCode, playerId }) => {
+  socket.on("joinRoom", ({ roomCode, playerId, name }) => {
     try {
       if (!roomCode || !playerId) {
         socket.emit("joinDenied", { message: "Invalid parameters" });
@@ -671,9 +821,17 @@ io.on("connection", (socket) => {
         return;
       }
 
+      const cleanName = sanitizeName(name);
+
       if (!room.players[playerId]) {
-        room.players[playerId] = { hero: null, ready: false };
+        room.players[playerId] = {
+          hero: null,
+          ready: false,
+          name: cleanName || `Player ${count + 1}`,
+        };
         room.playerOrder.push(playerId);
+      } else if (cleanName) {
+        room.players[playerId].name = cleanName;
       }
 
       socket.join(roomCode);
@@ -696,6 +854,29 @@ io.on("connection", (socket) => {
     } catch (e) {
       console.error("joinRoom error:", e);
       socket.emit("joinDenied", { message: "Server error" });
+    }
+  });
+
+  socket.on("setPlayerName", ({ name }) => {
+    try {
+      const { roomCode, playerId } = socket.data;
+      if (!roomCode || !playerId) return;
+
+      const room = rooms.get(roomCode);
+      if (!room || !room.players[playerId]) return;
+
+      const clean = sanitizeName(name);
+      if (!clean) return;
+
+      room.players[playerId].name = clean;
+      if (room.gameState.players[playerId]) {
+        room.gameState.players[playerId].name = clean;
+      }
+
+      emitRoomState(roomCode);
+      emitGameState(roomCode);
+    } catch (e) {
+      console.error("setPlayerName error:", e);
     }
   });
 
@@ -775,19 +956,41 @@ io.on("connection", (socket) => {
       }
 
       room.started = true;
-      room.gameState = null;
-      io.to(roomCode).emit("startGame");
+      room.worldRuntime = cloneWorldRuntime(room.world);
+      room.gameState = {
+        players: {},
+        keyCollected: false,
+        playersAtDoor: [],
+        gameStatus: "playing",
+        world: room.world,
+      };
 
+      io.to(roomCode).emit("startGame");
       emitRoomState(roomCode);
       emitGameState(roomCode);
+      startRoomLoop(roomCode);
     } catch (e) {
       console.error("startGameNow error:", e);
       socket.emit("startDenied", { message: "Server error" });
     }
   });
 
-  socket.on("playerInput", (payload) => applyPlayerInput(socket, payload));
-  socket.on("playerMove", (payload) => applyPlayerInput(socket, payload));
+  const updateInput = (payload) => {
+    try {
+      const { roomCode, playerId } = socket.data;
+      if (!roomCode || !playerId) return;
+
+      const room = rooms.get(roomCode);
+      if (!room || !room.started) return;
+
+      room.inputs[playerId] = parseInputPayload(payload);
+    } catch (e) {
+      console.error("playerInput error:", e);
+    }
+  };
+
+  socket.on("playerInput", updateInput);
+  socket.on("playerMove", updateInput);
 
   socket.on("disconnect", () => {
     try {
@@ -801,24 +1004,24 @@ io.on("connection", (socket) => {
       if (sockets.size > 0) return;
 
       playerToSocket.delete(playerId);
-
       clearPendingDisconnect(playerId);
+
       const timer = setTimeout(() => {
         pendingDisconnects.delete(playerId);
 
         const room = rooms.get(roomCode);
         if (!room) return;
-
         if (playerToSocket.has(playerId)) return;
         if (!room.players[playerId]) return;
 
         delete room.players[playerId];
-        if (room.gameState?.players?.[playerId])
+        delete room.inputs[playerId];
+        if (room.gameState.players[playerId])
           delete room.gameState.players[playerId];
-
         room.playerOrder = room.playerOrder.filter((x) => x !== playerId);
 
         if (Object.keys(room.players).length === 0) {
+          stopRoomLoop(roomCode);
           rooms.delete(roomCode);
           return;
         }
