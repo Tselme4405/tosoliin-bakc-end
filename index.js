@@ -89,15 +89,15 @@ const io = new Server(server, {
 
 // ---------------- Constants ----------------
 const BASE_PHYSICS = {
-  gravity: 0.6,
-  moveSpeed: 5,
-  jumpForce: -14,
-  maxFallSpeed: 18,
-  friction: 0.85,
+  gravity: 0.3,
+  moveSpeed: 2.5,
+  jumpForce: -10,
+  maxFallSpeed: 20,
+  friction: 0.25,
 };
 
-const PLAYER_WIDTH = 35;
-const PLAYER_HEIGHT = 45;
+const PLAYER_WIDTH = 45;
+const PLAYER_HEIGHT = 55;
 
 const WORLD_BASE_Y = 620;
 const WORLD_MAIN_FLOOR_Y = WORLD_BASE_Y + 40;
