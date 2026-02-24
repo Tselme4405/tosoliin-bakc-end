@@ -268,6 +268,7 @@ const WORLDS = {
     id: 1,
     width: 6000,
     groundY: WORLD_MAIN_FLOOR_Y,
+    hasGlobalFloor: false, // IMPORTANT: allows falling between platforms
     ...BASE_PHYSICS,
     platforms: buildWorld1Platforms(),
     movingPlatforms: buildWorld1MovingPlatforms(),
@@ -280,6 +281,7 @@ const WORLDS = {
     id: 2,
     width: 8200,
     groundY: WORLD_MAIN_FLOOR_Y,
+    hasGlobalFloor: true,
     ...BASE_PHYSICS,
     platforms: buildWorld2Platforms(),
     movingPlatforms: [],
@@ -300,6 +302,7 @@ function cloneWorldRuntime(worldId) {
     id: w.id,
     width: w.width,
     groundY: w.groundY,
+    hasGlobalFloor: w.hasGlobalFloor,
     gravity: w.gravity,
     moveSpeed: w.moveSpeed,
     jumpForce: w.jumpForce,
@@ -579,30 +582,34 @@ function applyPlayerStep(room, playerId) {
     const platTop = plat.y;
     const platBottom = plat.y + plat.height;
 
+    // landing on top
     if (prevBottom <= platTop && currBottom >= platTop && player.vy >= 0) {
       player.y = platTop - player.height;
       player.vy = 0;
       player.onGround = true;
 
-      const fp = world.fallingPlatforms.find(
-        (x) => x.x === plat.x && x.y === plat.y,
-      );
-      if (fp && !fp.falling) fp.falling = true;
+      // robust falling-platform trigger
+      if ("falling" in plat && !plat.falling) {
+        plat.falling = true;
+      }
       continue;
     }
 
+    // hitting underside
     if (prevY >= platBottom && player.y <= platBottom && player.vy < 0) {
       player.y = platBottom;
       player.vy = 0;
     }
   }
 
-  if (player.y + player.height >= world.groundY) {
+  // only world2 has global floor
+  if (world.hasGlobalFloor && player.y + player.height >= world.groundY) {
     player.y = world.groundY - player.height;
     player.vy = 0;
     player.onGround = true;
   }
 
+  // fall death
   if (player.y > world.groundY + 300) {
     player.dead = true;
     room.gameState.gameStatus = "dead";
@@ -728,7 +735,7 @@ io.on("connection", (socket) => {
         worldRuntime: cloneWorldRuntime(1),
         playerOrder: [hostId],
         players: {
-          [hostId]: { hero: null, ready: false, name: name || `Player 1` },
+          [hostId]: { hero: null, ready: false, name: name || "Player 1" },
         },
         gameState: {
           players: {},
@@ -990,7 +997,7 @@ io.on("connection", (socket) => {
   };
 
   socket.on("playerInput", updateInput);
-  socket.on("playerMove", updateInput);
+  socket.on("playerMove", updateInput); // keep for compatibility
 
   socket.on("disconnect", () => {
     try {
@@ -1016,8 +1023,9 @@ io.on("connection", (socket) => {
 
         delete room.players[playerId];
         delete room.inputs[playerId];
-        if (room.gameState.players[playerId])
+        if (room.gameState.players[playerId]) {
           delete room.gameState.players[playerId];
+        }
         room.playerOrder = room.playerOrder.filter((x) => x !== playerId);
 
         if (Object.keys(room.players).length === 0) {
