@@ -90,18 +90,22 @@ const io = new Server(server, {
 
 // ---------------- Constants ----------------
 const BASE_PHYSICS = {
-  gravity: 0.5,
-  moveSpeed: 3,
+  gravity: 0.6,
+  moveSpeed: 5,
   jumpForce: -14,
   maxFallSpeed: 18,
-  friction: 0,
+  friction: 0.85,
 };
 
-const PLAYER_WIDTH = 35;
-const PLAYER_HEIGHT = 45;
+// Match frontend sprite/collider dimensions
+const PLAYER_WIDTH = 45;
+const PLAYER_HEIGHT = 55;
 
-const WORLD_BASE_Y = 620;
-const WORLD_MAIN_FLOOR_Y = WORLD_BASE_Y + 40;
+// Separate world heights so map2 sits on visible ground (not floating)
+const WORLD1_BASE_Y = 620;
+const WORLD2_BASE_Y = 820;
+const WORLD1_MAIN_FLOOR_Y = WORLD1_BASE_Y + 40;
+const WORLD2_MAIN_FLOOR_Y = WORLD2_BASE_Y + 40;
 
 const clamp = (n, min, max) => Math.max(min, Math.min(max, n));
 const sanitizeName = (v) =>
@@ -120,7 +124,7 @@ function intersects(a, b) {
 
 // ---------------- Worlds ----------------
 function buildWorld1Platforms() {
-  const gy = WORLD_BASE_Y;
+  const gy = WORLD1_BASE_Y;
   return [
     { x: 0, y: gy + 40, width: 250, height: 20 },
     { x: 320, y: gy + 40, width: 60, height: 20 },
@@ -156,7 +160,6 @@ function buildWorld1Platforms() {
     { x: 5280, y: gy - 20, width: 80, height: 20 },
     { x: 5440, y: gy + 20, width: 100, height: 20 },
     { x: 5620, y: gy + 40, width: 200, height: 20 },
-
     { x: 275, y: gy - 50, width: 55, height: 20 },
     { x: 1225, y: gy - 15, width: 55, height: 20 },
     { x: 2220, y: gy - 205, width: 55, height: 20 },
@@ -164,7 +167,7 @@ function buildWorld1Platforms() {
 }
 
 function buildWorld1MovingPlatforms() {
-  const gy = WORLD_BASE_Y;
+  const gy = WORLD1_BASE_Y;
   return [
     {
       x: 650,
@@ -190,7 +193,7 @@ function buildWorld1MovingPlatforms() {
 }
 
 function buildWorld1FallingPlatforms() {
-  const gy = WORLD_BASE_Y;
+  const gy = WORLD1_BASE_Y;
   return [
     {
       x: 1730,
@@ -223,12 +226,12 @@ function buildWorld1FallingPlatforms() {
 }
 
 function buildWorld2Platforms() {
-  const gy = WORLD_BASE_Y;
+  const gy = WORLD2_BASE_Y;
   return [{ x: 0, y: gy + 40, width: 8200, height: 20 }];
 }
 
 function buildWorld2DangerButtons() {
-  const gy = WORLD_BASE_Y;
+  const gy = WORLD2_BASE_Y;
   return [
     { x: 300, y: gy + 5, width: 40, height: 35 },
     { x: 530, y: gy + 5, width: 40, height: 35 },
@@ -268,7 +271,7 @@ const WORLDS = {
   1: {
     id: 1,
     width: 6000,
-    groundY: WORLD_MAIN_FLOOR_Y,
+    groundY: WORLD1_MAIN_FLOOR_Y,
     hasGlobalFloor: false,
     ...BASE_PHYSICS,
     platforms: buildWorld1Platforms(),
@@ -281,14 +284,14 @@ const WORLDS = {
   2: {
     id: 2,
     width: 8200,
-    groundY: WORLD_MAIN_FLOOR_Y,
+    groundY: WORLD2_MAIN_FLOOR_Y,
     hasGlobalFloor: true,
     ...BASE_PHYSICS,
     platforms: buildWorld2Platforms(),
     movingPlatforms: [],
     fallingPlatforms: [],
-    key: { x: 3740, y: 340, width: 40, height: 40 },
-    door: { x: 4520, y: 545, width: 55, height: 75 },
+    key: { x: 3740, y: WORLD2_MAIN_FLOOR_Y - 280, width: 40, height: 40 },
+    door: { x: 4520, y: WORLD2_MAIN_FLOOR_Y - 75, width: 55, height: 75 },
     dangerButtons: buildWorld2DangerButtons(),
   },
 };
@@ -747,6 +750,36 @@ function stopRoomLoop(roomCode) {
   room.loopHandle = null;
 }
 
+function normalizeWorldValue(value) {
+  const s = String(value ?? "")
+    .toLowerCase()
+    .trim();
+  if (s === "2" || s === "map2" || s === "world2") return 2;
+  return 1;
+}
+
+function applyWorldSelection(roomCode, playerId, requestedWorld) {
+  const room = rooms.get(roomCode);
+  if (!room) return;
+  if (room.hostId !== playerId || room.started) return;
+
+  const worldNum = normalizeWorldValue(requestedWorld);
+  room.world = worldNum;
+  room.worldRuntime = cloneWorldRuntime(worldNum);
+
+  room.gameState = {
+    players: {},
+    keyCollected: false,
+    playersAtDoor: [],
+    gameStatus: "waiting",
+    world: worldNum,
+  };
+  room.deadUntil = 0;
+
+  emitRoomState(roomCode);
+  emitGameState(roomCode);
+}
+
 // ---------------- Socket ----------------
 io.on("connection", (socket) => {
   console.log("✅ Socket connected:", socket.id);
@@ -826,26 +859,20 @@ io.on("connection", (socket) => {
     try {
       const { roomCode, playerId } = socket.data;
       if (!roomCode || !playerId) return;
-
-      const room = rooms.get(roomCode);
-      if (!room || room.hostId !== playerId || room.started) return;
-
-      room.world = Number(world) === 2 ? 2 : 1;
-      room.worldRuntime = cloneWorldRuntime(room.world);
-
-      room.gameState = {
-        players: {},
-        keyCollected: false,
-        playersAtDoor: [],
-        gameStatus: "waiting",
-        world: room.world,
-      };
-      room.deadUntil = 0;
-
-      emitRoomState(roomCode);
-      emitGameState(roomCode);
+      applyWorldSelection(roomCode, playerId, world);
     } catch (e) {
       console.error("setWorld error:", e);
+    }
+  });
+
+  // Alias for frontend that emits setLevel with map1/map2
+  socket.on("setLevel", ({ level, world }) => {
+    try {
+      const { roomCode, playerId } = socket.data;
+      if (!roomCode || !playerId) return;
+      applyWorldSelection(roomCode, playerId, level ?? world);
+    } catch (e) {
+      console.error("setLevel error:", e);
     }
   });
 
@@ -1100,6 +1127,7 @@ io.on("connection", (socket) => {
     }
   });
 });
+
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`✅ Socket server running on port ${PORT}`);
   console.log(`🌍 Environment: ${NODE_ENV}`);
