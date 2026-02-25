@@ -92,7 +92,7 @@ const io = new Server(server, {
 const BASE_PHYSICS = {
   gravity: 0.5,
   moveSpeed: 3,
-  jumpForce: -10,
+  jumpForce: -14,
   maxFallSpeed: 18,
   friction: 0.85,
 };
