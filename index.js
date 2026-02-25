@@ -1,4 +1,4 @@
-// server.js
+// backend-server-fixed.js
 const express = require("express");
 const http = require("http");
 const cors = require("cors");
@@ -10,7 +10,7 @@ const PORT = Number(process.env.PORT || 4000);
 const NODE_ENV = process.env.NODE_ENV || "development";
 const CLIENT_URL = process.env.CLIENT_URL || "http://localhost:3000";
 const DISCONNECT_GRACE_MS = Number(process.env.DISCONNECT_GRACE_MS || 15000);
-const TICK_RATE = Number(process.env.TICK_RATE || 30);
+const TICK_RATE = Number(process.env.TICK_RATE || 60);
 const RESPAWN_DELAY_MS = Number(process.env.RESPAWN_DELAY_MS || 1800);
 
 // ---------------- CORS ----------------
@@ -502,11 +502,13 @@ function updateWorldRuntime(room, dtScale) {
   const world = room.worldRuntime;
 
   world.movingPlatforms.forEach((mp) => {
+    const prevX = mp.x;
     mp.x += mp.speed * mp.direction * dtScale;
     if (mp.x <= mp.startX || mp.x >= mp.endX) {
       mp.direction *= -1;
       mp.x = clamp(mp.x, mp.startX, mp.endX);
     }
+    mp.deltaX = mp.x - prevX;
   });
 
   world.fallingPlatforms.forEach((fp) => {
@@ -522,6 +524,16 @@ function platformListForCollisions(world) {
     (fp) => fp.y < world.groundY + 300,
   );
   return [...world.platforms, ...world.movingPlatforms, ...visibleFalling];
+}
+
+function movingPlatformUnderPlayer(world, player) {
+  const playerBottom = player.y + player.height;
+  return world.movingPlatforms.find((mp) => {
+    const standingOnTop = Math.abs(playerBottom - mp.y) <= 2;
+    const horizontalOverlap =
+      player.x + player.width > mp.x + 2 && player.x < mp.x + mp.width - 2;
+    return standingOnTop && horizontalOverlap;
+  });
 }
 
 function applyPlayerStep(room, playerId, dtScale) {
@@ -552,6 +564,12 @@ function applyPlayerStep(room, playerId, dtScale) {
   if (input.jump && player.onGround) {
     player.vy = world.jumpForce;
     player.onGround = false;
+  }
+
+  const carrier = movingPlatformUnderPlayer(world, player);
+  if (player.onGround && carrier && Number.isFinite(carrier.deltaX)) {
+    player.x += carrier.deltaX;
+    player.x = clamp(player.x, 0, world.width - player.width);
   }
 
   const plats = platformListForCollisions(world);
@@ -602,14 +620,12 @@ function applyPlayerStep(room, playerId, dtScale) {
     }
   }
 
-  // only world2 has global floor
   if (world.hasGlobalFloor && player.y + player.height >= world.groundY) {
     player.y = world.groundY - player.height;
     player.vy = 0;
     player.onGround = true;
   }
 
-  // fall death
   if (player.y > world.groundY + 300) {
     player.dead = true;
     room.gameState.gameStatus = "dead";
@@ -1033,7 +1049,7 @@ io.on("connection", (socket) => {
   };
 
   socket.on("playerInput", updateInput);
-  socket.on("playerMove", updateInput); // compatibility
+  socket.on("playerMove", updateInput);
 
   socket.on("disconnect", () => {
     try {
