@@ -94,7 +94,7 @@ const BASE_PHYSICS = {
   moveSpeed: 3,
   jumpForce: -14,
   maxFallSpeed: 18,
-  friction: 0.85,
+  friction: 0,
 };
 
 const PLAYER_WIDTH = 35;
