@@ -11,6 +11,7 @@ const NODE_ENV = process.env.NODE_ENV || "development";
 const CLIENT_URL = process.env.CLIENT_URL || "http://localhost:3000";
 const DISCONNECT_GRACE_MS = Number(process.env.DISCONNECT_GRACE_MS || 15000);
 const TICK_RATE = Number(process.env.TICK_RATE || 30);
+const RESPAWN_DELAY_MS = Number(process.env.RESPAWN_DELAY_MS || 1800);
 
 // ---------------- CORS ----------------
 const normalizeOrigin = (u) => (u ? String(u).trim().replace(/\/+$/, "") : u);
@@ -54,9 +55,9 @@ app.use(
 app.use(express.json());
 
 // ---------------- In-memory state ----------------
-const rooms = new Map(); // roomCode -> room
-const playerToSocket = new Map(); // playerId -> Set(socket.id)
-const pendingDisconnects = new Map(); // playerId -> Timeout
+const rooms = new Map();
+const playerToSocket = new Map();
+const pendingDisconnects = new Map();
 
 // ---------------- Health ----------------
 app.get("/health", (req, res) => {
@@ -89,15 +90,15 @@ const io = new Server(server, {
 
 // ---------------- Constants ----------------
 const BASE_PHYSICS = {
-  gravity: 0.3,
-  moveSpeed: 2.5,
-  jumpForce: -10,
-  maxFallSpeed: 20,
-  friction: 0.25,
+  gravity: 0.6,
+  moveSpeed: 5,
+  jumpForce: -14,
+  maxFallSpeed: 18,
+  friction: 0.85,
 };
 
-const PLAYER_WIDTH = 45;
-const PLAYER_HEIGHT = 55;
+const PLAYER_WIDTH = 35;
+const PLAYER_HEIGHT = 45;
 
 const WORLD_BASE_Y = 620;
 const WORLD_MAIN_FLOOR_Y = WORLD_BASE_Y + 40;
@@ -268,7 +269,7 @@ const WORLDS = {
     id: 1,
     width: 6000,
     groundY: WORLD_MAIN_FLOOR_Y,
-    hasGlobalFloor: false, // IMPORTANT: allows falling between platforms
+    hasGlobalFloor: false,
     ...BASE_PHYSICS,
     platforms: buildWorld1Platforms(),
     movingPlatforms: buildWorld1MovingPlatforms(),
@@ -497,11 +498,11 @@ function resolvePlayerCollisions(room, selfId) {
   }
 }
 
-function updateWorldRuntime(room) {
+function updateWorldRuntime(room, dtScale) {
   const world = room.worldRuntime;
 
   world.movingPlatforms.forEach((mp) => {
-    mp.x += mp.speed * mp.direction;
+    mp.x += mp.speed * mp.direction * dtScale;
     if (mp.x <= mp.startX || mp.x >= mp.endX) {
       mp.direction *= -1;
       mp.x = clamp(mp.x, mp.startX, mp.endX);
@@ -510,8 +511,8 @@ function updateWorldRuntime(room) {
 
   world.fallingPlatforms.forEach((fp) => {
     if (fp.falling) {
-      fp.fallTimer += 1;
-      if (fp.fallTimer > 30) fp.y += 8;
+      fp.fallTimer += dtScale;
+      if (fp.fallTimer > 30) fp.y += 8 * dtScale;
     }
   });
 }
@@ -523,7 +524,7 @@ function platformListForCollisions(world) {
   return [...world.platforms, ...world.movingPlatforms, ...visibleFalling];
 }
 
-function applyPlayerStep(room, playerId) {
+function applyPlayerStep(room, playerId, dtScale) {
   const world = room.worldRuntime;
   const player = ensurePlayerState(room, playerId);
   if (!player || player.dead) return;
@@ -543,7 +544,7 @@ function applyPlayerStep(room, playerId) {
     player.facingRight = true;
     player.animFrame = (player.animFrame + 1) % 4;
   } else {
-    player.vx *= world.friction;
+    player.vx *= Math.pow(world.friction, dtScale);
     if (Math.abs(player.vx) < 0.1) player.vx = 0;
     player.animFrame = 0;
   }
@@ -553,10 +554,11 @@ function applyPlayerStep(room, playerId) {
     player.onGround = false;
   }
 
-  // Horizontal
   const plats = platformListForCollisions(world);
+
+  // Horizontal
   const prevX = player.x;
-  player.x += player.vx;
+  player.x += player.vx * dtScale;
   player.x = clamp(player.x, 0, world.width - player.width);
 
   for (const plat of plats) {
@@ -570,9 +572,9 @@ function applyPlayerStep(room, playerId) {
   // Vertical
   const prevY = player.y;
   const prevBottom = prevY + player.height;
-  player.vy += world.gravity;
+  player.vy += world.gravity * dtScale;
   player.vy = Math.min(player.vy, world.maxFallSpeed);
-  player.y += player.vy;
+  player.y += player.vy * dtScale;
   player.onGround = false;
 
   for (const plat of plats) {
@@ -582,20 +584,18 @@ function applyPlayerStep(room, playerId) {
     const platTop = plat.y;
     const platBottom = plat.y + plat.height;
 
-    // landing on top
     if (prevBottom <= platTop && currBottom >= platTop && player.vy >= 0) {
       player.y = platTop - player.height;
       player.vy = 0;
       player.onGround = true;
 
-      // robust falling-platform trigger
       if ("falling" in plat && !plat.falling) {
         plat.falling = true;
+        plat.fallTimer = 0;
       }
       continue;
     }
 
-    // hitting underside
     if (prevY >= platBottom && player.y <= platBottom && player.vy < 0) {
       player.y = platBottom;
       player.vy = 0;
@@ -613,12 +613,37 @@ function applyPlayerStep(room, playerId) {
   if (player.y > world.groundY + 300) {
     player.dead = true;
     room.gameState.gameStatus = "dead";
+    room.deadUntil = Date.now() + RESPAWN_DELAY_MS;
   }
 
   resolvePlayerCollisions(room, playerId);
 }
 
+function resetRoundAfterDeath(room) {
+  room.worldRuntime = cloneWorldRuntime(room.world);
+  room.gameState.keyCollected = false;
+  room.gameState.playersAtDoor = [];
+  room.gameState.gameStatus = "playing";
+
+  for (const pid of room.playerOrder) {
+    if (!room.players[pid]) continue;
+    const slot = playerIndexOf(room, pid);
+    room.gameState.players[pid] = createPlayerGameState(pid, slot, room);
+  }
+
+  room.deadUntil = 0;
+}
+
 function evaluateGameState(room) {
+  const now = Date.now();
+
+  if (room.gameState.gameStatus === "dead") {
+    if (room.deadUntil && now >= room.deadUntil) {
+      resetRoundAfterDeath(room);
+    }
+    return;
+  }
+
   const world = room.worldRuntime;
   const players = room.gameState.players;
   const playerIds = room.playerOrder.filter((pid) => room.players[pid]);
@@ -633,19 +658,18 @@ function evaluateGameState(room) {
     }
   }
 
-  if (room.world === 2 && room.gameState.gameStatus !== "dead") {
+  if (room.world === 2) {
     for (const pid of playerIds) {
       const p = players[pid];
       if (!p || p.dead) continue;
       const touchedDanger = world.dangerButtons.some((b) => intersects(p, b));
       if (touchedDanger) {
         room.gameState.gameStatus = "dead";
-        break;
+        room.deadUntil = Date.now() + RESPAWN_DELAY_MS;
+        return;
       }
     }
   }
-
-  if (room.gameState.gameStatus === "dead") return;
 
   if (room.gameState.keyCollected) {
     const atDoor = [];
@@ -672,11 +696,18 @@ function stepRoom(roomCode) {
   const room = rooms.get(roomCode);
   if (!room || !room.started) return;
 
-  updateWorldRuntime(room);
+  const now = Date.now();
+  const frameMs = 1000 / TICK_RATE;
+  const elapsedMs = room.lastStepAt ? now - room.lastStepAt : frameMs;
+  room.lastStepAt = now;
+
+  const dtScale = clamp(elapsedMs / frameMs, 0.5, 2.5);
+
+  updateWorldRuntime(room, dtScale);
 
   for (const pid of room.playerOrder) {
     if (!room.players[pid]) continue;
-    applyPlayerStep(room, pid);
+    applyPlayerStep(room, pid, dtScale);
   }
 
   evaluateGameState(room);
@@ -688,6 +719,7 @@ function startRoomLoop(roomCode) {
   if (!room) return;
   if (room.loopHandle) return;
 
+  room.lastStepAt = Date.now();
   const tickMs = Math.max(10, Math.floor(1000 / TICK_RATE));
   room.loopHandle = setInterval(() => stepRoom(roomCode), tickMs);
 }
@@ -746,6 +778,8 @@ io.on("connection", (socket) => {
         },
         inputs: {},
         loopHandle: null,
+        lastStepAt: 0,
+        deadUntil: 0,
       };
 
       rooms.set(roomCode, room);
@@ -790,6 +824,7 @@ io.on("connection", (socket) => {
         gameStatus: "waiting",
         world: room.world,
       };
+      room.deadUntil = 0;
 
       emitRoomState(roomCode);
       emitGameState(roomCode);
@@ -971,6 +1006,7 @@ io.on("connection", (socket) => {
         gameStatus: "playing",
         world: room.world,
       };
+      room.deadUntil = 0;
 
       io.to(roomCode).emit("startGame");
       emitRoomState(roomCode);
@@ -997,7 +1033,7 @@ io.on("connection", (socket) => {
   };
 
   socket.on("playerInput", updateInput);
-  socket.on("playerMove", updateInput); // keep for compatibility
+  socket.on("playerMove", updateInput); // compatibility
 
   socket.on("disconnect", () => {
     try {
