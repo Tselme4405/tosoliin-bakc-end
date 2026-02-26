@@ -281,6 +281,7 @@ const WORLDS = {
     door: { x: 3030, y: 455, width: 55, height: 75 },
     dangerButtons: [],
   },
+  // In WORLDS[2]
   2: {
     id: 2,
     width: 8200,
@@ -290,8 +291,13 @@ const WORLDS = {
     platforms: buildWorld2Platforms(),
     movingPlatforms: [],
     fallingPlatforms: [],
-    key: { x: 3740, y: WORLD2_MAIN_FLOOR_Y - 280, width: 40, height: 40 },
-    door: { x: 4520, y: WORLD2_MAIN_FLOOR_Y - 75, width: 55, height: 75 },
+
+    // Match frontend map2/page.tsx (keyRef)
+    key: { x: 2400, y: WORLD2_MAIN_FLOOR_Y - 100, width: 40, height: 40 },
+
+    // Match frontend map2/page.tsx (doorRef)
+    door: { x: 4400, y: WORLD2_MAIN_FLOOR_Y - 120, width: 80, height: 120 },
+
     dangerButtons: buildWorld2DangerButtons(),
   },
 };
@@ -336,6 +342,11 @@ function playerIndexOf(room, playerId) {
 
 function createPlayerGameState(clientPlayerId, slot, room) {
   const colors = ["#FF6B6B", "#4ECDC4", "#FFE66D", "#A8DADC"];
+  const firstPlatform = room.worldRuntime.platforms?.[0];
+  const spawnY = firstPlatform
+    ? firstPlatform.y - PLAYER_HEIGHT
+    : room.worldRuntime.groundY - PLAYER_HEIGHT;
+
   return {
     id: slot,
     clientPlayerId,
@@ -343,7 +354,7 @@ function createPlayerGameState(clientPlayerId, slot, room) {
     hero: room.players[clientPlayerId]?.hero ?? null,
     name: room.players[clientPlayerId]?.name ?? "",
     x: 100 + (slot - 1) * 80,
-    y: room.worldRuntime.groundY - PLAYER_HEIGHT,
+    y: spawnY, // use visible platform top
     vx: 0,
     vy: 0,
     width: PLAYER_WIDTH,
