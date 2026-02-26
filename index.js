@@ -103,7 +103,7 @@ const PLAYER_HEIGHT = 55;
 
 // Separate world heights so map2 sits on visible ground (not floating)
 const WORLD1_BASE_Y = 620;
-const WORLD2_BASE_Y = 820;
+const WORLD2_BASE_Y = Number(process.env.WORLD2_BASE_Y || 620);
 const WORLD1_MAIN_FLOOR_Y = WORLD1_BASE_Y + 40;
 const WORLD2_MAIN_FLOOR_Y = WORLD2_BASE_Y + 40;
 
@@ -291,10 +291,9 @@ const WORLDS = {
     platforms: buildWorld2Platforms(),
     movingPlatforms: [],
     fallingPlatforms: [],
-    // Match frontend map2/page.tsx keyRef
-    key: { x: 2400, y: WORLD2_MAIN_FLOOR_Y - 100, width: 40, height: 40 },
-    // Match frontend map2/page.tsx doorRef
-    door: { x: 4400, y: WORLD2_MAIN_FLOOR_Y - 120, width: 80, height: 120 },
+    // FIX: use WORLD2_BASE_Y (frontend groundY), not WORLD2_MAIN_FLOOR_Y
+    key: { x: 2400, y: WORLD2_BASE_Y - 100, width: 40, height: 40 },
+    door: { x: 4400, y: WORLD2_BASE_Y - 120, width: 80, height: 120 },
     dangerButtons: buildWorld2DangerButtons(),
   },
 };
