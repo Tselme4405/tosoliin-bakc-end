@@ -160,9 +160,6 @@ function buildWorld1Platforms() {
     { x: 5280, y: gy - 20, width: 80, height: 20 },
     { x: 5440, y: gy + 20, width: 100, height: 20 },
     { x: 5620, y: gy + 40, width: 200, height: 20 },
-    { x: 275, y: gy - 50, width: 55, height: 20 },
-    { x: 1225, y: gy - 15, width: 55, height: 20 },
-    { x: 2220, y: gy - 205, width: 55, height: 20 },
   ];
 }
 
@@ -279,7 +276,7 @@ const WORLDS = {
     platforms: buildWorld1Platforms(),
     movingPlatforms: buildWorld1MovingPlatforms(),
     fallingPlatforms: buildWorld1FallingPlatforms(),
-    key: { x: 1950, y: 250, width: 40, height: 40 },
+    key: { x: 1950, y: 290, width: 40, height: 40 },
     door: { x: 3030, y: 455, width: 55, height: 75 },
     dangerButtons: [],
   },
@@ -293,7 +290,7 @@ const WORLDS = {
     movingPlatforms: [],
     fallingPlatforms: [],
     // FIX: use WORLD2_BASE_Y (frontend groundY), not WORLD2_MAIN_FLOOR_Y
-    key: { x: 2400, y: WORLD2_BASE_Y - 100, width: 40, height: 40 },
+    key: { x: 2400, y: WORLD2_BASE_Y - 220, width: 40, height: 40 },
     door: { x: 4400, y: WORLD2_BASE_Y - 120, width: 80, height: 120 },
     dangerButtons: buildWorld2DangerButtons(),
   },
@@ -314,7 +311,7 @@ function buildWorld2Runtime(baseY = WORLD2_BASE_Y) {
     platforms: buildWorld2Platforms(baseY),
     movingPlatforms: [],
     fallingPlatforms: [],
-    key: { x: 2400, y: baseY - 100, width: 40, height: 40 },
+    key: { x: 2400, y: baseY - 220, width: 40, height: 40 },
     door: { x: 4400, y: baseY - 120, width: 80, height: 120 },
     dangerButtons: buildWorld2DangerButtons(baseY),
   };
@@ -563,7 +560,9 @@ function platformListForCollisions(world) {
 function movingPlatformUnderPlayer(world, player) {
   const playerBottom = player.y + player.height;
   return world.movingPlatforms.find((mp) => {
-    const standingOnTop = Math.abs(playerBottom - mp.y) <= 2;
+    // Be tolerant to small server tick drift so carry stays stable.
+    const standingOnTop =
+      playerBottom >= mp.y - 8 && playerBottom <= mp.y + 10 && player.vy >= -1;
     const horizontalOverlap =
       player.x + player.width > mp.x + 2 && player.x < mp.x + mp.width - 2;
     return standingOnTop && horizontalOverlap;
@@ -598,12 +597,6 @@ function applyPlayerStep(room, playerId, dtScale) {
   if (input.jump && player.onGround) {
     player.vy = world.jumpForce;
     player.onGround = false;
-  }
-
-  const carrier = movingPlatformUnderPlayer(world, player);
-  if (player.onGround && carrier && Number.isFinite(carrier.deltaX)) {
-    player.x += carrier.deltaX;
-    player.x = clamp(player.x, 0, world.width - player.width);
   }
 
   const plats = platformListForCollisions(world);
@@ -658,6 +651,12 @@ function applyPlayerStep(room, playerId, dtScale) {
     player.y = world.groundY - player.height;
     player.vy = 0;
     player.onGround = true;
+  }
+
+  const carrier = movingPlatformUnderPlayer(world, player);
+  if (player.onGround && carrier && Number.isFinite(carrier.deltaX)) {
+    player.x += carrier.deltaX;
+    player.x = clamp(player.x, 0, world.width - player.width);
   }
 
   if (player.y > world.groundY + 300) {
