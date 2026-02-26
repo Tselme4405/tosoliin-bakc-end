@@ -227,6 +227,7 @@ function buildWorld1FallingPlatforms() {
 
 function buildWorld2Platforms() {
   const gy = WORLD2_BASE_Y;
+  // Match frontend map2 world geometry
   return [{ x: 0, y: gy + 40, width: 8200, height: 20 }];
 }
 
@@ -281,7 +282,6 @@ const WORLDS = {
     door: { x: 3030, y: 455, width: 55, height: 75 },
     dangerButtons: [],
   },
-  // In WORLDS[2]
   2: {
     id: 2,
     width: 8200,
@@ -291,13 +291,10 @@ const WORLDS = {
     platforms: buildWorld2Platforms(),
     movingPlatforms: [],
     fallingPlatforms: [],
-
-    // Match frontend map2/page.tsx (keyRef)
+    // Match frontend map2/page.tsx keyRef
     key: { x: 2400, y: WORLD2_MAIN_FLOOR_Y - 100, width: 40, height: 40 },
-
-    // Match frontend map2/page.tsx (doorRef)
+    // Match frontend map2/page.tsx doorRef
     door: { x: 4400, y: WORLD2_MAIN_FLOOR_Y - 120, width: 80, height: 120 },
-
     dangerButtons: buildWorld2DangerButtons(),
   },
 };
@@ -354,7 +351,7 @@ function createPlayerGameState(clientPlayerId, slot, room) {
     hero: room.players[clientPlayerId]?.hero ?? null,
     name: room.players[clientPlayerId]?.name ?? "",
     x: 100 + (slot - 1) * 80,
-    y: spawnY, // use visible platform top
+    y: spawnY,
     vx: 0,
     vy: 0,
     width: PLAYER_WIDTH,
