@@ -103,7 +103,7 @@ const PLAYER_HEIGHT = 55;
 
 // Separate world heights so map2 sits on visible ground (not floating)
 const WORLD1_BASE_Y = 620;
-const WORLD2_BASE_Y = Number(process.env.WORLD2_BASE_Y || 620);
+const WORLD2_BASE_Y = Number(process.env.WORLD2_BASE_Y || 820);
 const WORLD1_MAIN_FLOOR_Y = WORLD1_BASE_Y + 40;
 const WORLD2_MAIN_FLOOR_Y = WORLD2_BASE_Y + 40;
 
