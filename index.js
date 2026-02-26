@@ -227,7 +227,7 @@ function buildWorld1FallingPlatforms() {
 
 function buildWorld2Platforms() {
   const gy = WORLD2_BASE_Y;
-  return [{ x: 0, y: gy + 40, width: 8200, height: 20 }];
+  return [{ x: 0, y: gy + 40, width: 260, height: 20 }];
 }
 
 function buildWorld2DangerButtons() {
