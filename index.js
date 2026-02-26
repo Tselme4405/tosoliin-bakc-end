@@ -194,45 +194,46 @@ function buildWorld1MovingPlatforms() {
 
 function buildWorld1FallingPlatforms() {
   const gy = WORLD1_BASE_Y;
+  // Match frontend world1 falling platform layout
   return [
     {
-      x: 1730,
-      y: gy - 240,
-      width: 60,
+      x: 275,
+      y: gy - 50,
+      width: 55,
       height: 20,
-      originalY: gy - 240,
+      originalY: gy - 50,
       falling: false,
       fallTimer: 0,
     },
     {
-      x: 2410,
-      y: gy - 90,
-      width: 60,
+      x: 1225,
+      y: gy - 15,
+      width: 55,
       height: 20,
-      originalY: gy - 90,
+      originalY: gy - 15,
       falling: false,
       fallTimer: 0,
     },
     {
-      x: 2815,
-      y: gy - 275,
-      width: 60,
+      x: 2220,
+      y: gy - 205,
+      width: 55,
       height: 20,
-      originalY: gy - 275,
+      originalY: gy - 205,
       falling: false,
       fallTimer: 0,
     },
   ];
 }
 
-function buildWorld2Platforms() {
-  const gy = WORLD2_BASE_Y;
+function buildWorld2Platforms(baseY = WORLD2_BASE_Y) {
+  const gy = baseY;
   // Match frontend map2 world geometry
   return [{ x: 0, y: gy + 40, width: 8200, height: 20 }];
 }
 
-function buildWorld2DangerButtons() {
-  const gy = WORLD2_BASE_Y;
+function buildWorld2DangerButtons(baseY = WORLD2_BASE_Y) {
+  const gy = baseY;
   return [
     { x: 300, y: gy + 5, width: 40, height: 35 },
     { x: 530, y: gy + 5, width: 40, height: 35 },
@@ -302,8 +303,31 @@ function getWorld(worldId) {
   return WORLDS[Number(worldId)] || WORLDS[1];
 }
 
-function cloneWorldRuntime(worldId) {
-  const w = getWorld(worldId);
+function buildWorld2Runtime(baseY = WORLD2_BASE_Y) {
+  const groundY = baseY + 40;
+  return {
+    id: 2,
+    width: 8200,
+    groundY,
+    hasGlobalFloor: true,
+    ...BASE_PHYSICS,
+    platforms: buildWorld2Platforms(baseY),
+    movingPlatforms: [],
+    fallingPlatforms: [],
+    key: { x: 2400, y: baseY - 100, width: 40, height: 40 },
+    door: { x: 4400, y: baseY - 120, width: 80, height: 120 },
+    dangerButtons: buildWorld2DangerButtons(baseY),
+  };
+}
+
+function cloneWorldRuntime(worldId, options = {}) {
+  const n = Number(worldId);
+  if (n === 2) {
+    const baseY = Number(options.world2BaseY);
+    return buildWorld2Runtime(Number.isFinite(baseY) ? baseY : WORLD2_BASE_Y);
+  }
+
+  const w = getWorld(n);
   return {
     id: w.id,
     width: w.width,
@@ -646,7 +670,9 @@ function applyPlayerStep(room, playerId, dtScale) {
 }
 
 function resetRoundAfterDeath(room) {
-  room.worldRuntime = cloneWorldRuntime(room.world);
+  room.worldRuntime = cloneWorldRuntime(room.world, {
+    world2BaseY: room.world2BaseY,
+  });
   room.gameState.keyCollected = false;
   room.gameState.playersAtDoor = [];
   room.gameState.gameStatus = "playing";
@@ -765,6 +791,46 @@ function normalizeWorldValue(value) {
   return 1;
 }
 
+function normalizeWorld2BaseYFromPayload(payload) {
+  const rawHeight = Number(
+    payload?.canvasHeight ?? payload?.viewportHeight ?? payload?.height,
+  );
+  if (!Number.isFinite(rawHeight) || rawHeight < 100) return null;
+  const baseY = Math.round(rawHeight) - 80;
+  return clamp(baseY, 500, 1400);
+}
+
+function syncRoomWorld2Height(room, payload) {
+  if (!room || room.world !== 2) return;
+
+  const nextBaseY = normalizeWorld2BaseYFromPayload(payload);
+  if (!Number.isFinite(nextBaseY)) return;
+
+  const prevBaseY = Number.isFinite(room.world2BaseY)
+    ? room.world2BaseY
+    : WORLD2_BASE_Y;
+
+  if (Math.abs(nextBaseY - prevBaseY) < 2) return;
+
+  const prevGroundY = room.worldRuntime?.groundY ?? prevBaseY + 40;
+  room.world2BaseY = nextBaseY;
+  room.worldRuntime = cloneWorldRuntime(2, { world2BaseY: room.world2BaseY });
+
+  const nextGroundY = room.worldRuntime.groundY;
+  const deltaY = nextGroundY - prevGroundY;
+
+  for (const p of Object.values(room.gameState.players || {})) {
+    if (!p) continue;
+    p.y += deltaY;
+    p.x = clamp(p.x, 0, room.worldRuntime.width - p.width);
+    if (p.y + p.height >= nextGroundY) {
+      p.y = nextGroundY - p.height;
+      p.vy = 0;
+      p.onGround = true;
+    }
+  }
+}
+
 function applyWorldSelection(roomCode, playerId, requestedWorld) {
   const room = rooms.get(roomCode);
   if (!room) return;
@@ -772,7 +838,9 @@ function applyWorldSelection(roomCode, playerId, requestedWorld) {
 
   const worldNum = normalizeWorldValue(requestedWorld);
   room.world = worldNum;
-  room.worldRuntime = cloneWorldRuntime(worldNum);
+  room.worldRuntime = cloneWorldRuntime(worldNum, {
+    world2BaseY: room.world2BaseY,
+  });
 
   room.gameState = {
     players: {},
@@ -820,6 +888,7 @@ io.on("connection", (socket) => {
         hostId,
         started: false,
         world: 1,
+        world2BaseY: WORLD2_BASE_Y,
         worldRuntime: cloneWorldRuntime(1),
         playerOrder: [hostId],
         players: {
@@ -1048,7 +1117,9 @@ io.on("connection", (socket) => {
       }
 
       room.started = true;
-      room.worldRuntime = cloneWorldRuntime(room.world);
+      room.worldRuntime = cloneWorldRuntime(room.world, {
+        world2BaseY: room.world2BaseY,
+      });
       room.gameState = {
         players: {},
         keyCollected: false,
@@ -1076,6 +1147,7 @@ io.on("connection", (socket) => {
       const room = rooms.get(roomCode);
       if (!room || !room.started) return;
 
+      syncRoomWorld2Height(room, payload);
       room.inputs[playerId] = parseInputPayload(payload);
     } catch (e) {
       console.error("playerInput error:", e);
