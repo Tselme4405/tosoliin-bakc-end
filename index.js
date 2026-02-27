@@ -127,6 +127,8 @@ function buildWorld1Platforms() {
   const gy = WORLD1_BASE_Y;
   return [
     { x: 0, y: gy + 40, width: 250, height: 20 },
+    // Helper bridge to make map1 easier for all players.
+    { x: 250, y: gy + 40, width: 5500, height: 20 },
     { x: 320, y: gy + 40, width: 60, height: 20 },
     { x: 450, y: gy + 40, width: 60, height: 20 },
     { x: 580, y: gy + 40, width: 60, height: 20 },
@@ -164,63 +166,11 @@ function buildWorld1Platforms() {
 }
 
 function buildWorld1MovingPlatforms() {
-  const gy = WORLD1_BASE_Y;
-  return [
-    {
-      x: 650,
-      y: gy - 250,
-      width: 70,
-      height: 20,
-      startX: 620,
-      endX: 780,
-      speed: 2,
-      direction: 1,
-    },
-    {
-      x: 1120,
-      y: gy - 60,
-      width: 60,
-      height: 20,
-      startX: 1080,
-      endX: 1240,
-      speed: 1.8,
-      direction: 1,
-    },
-  ];
+  return [];
 }
 
 function buildWorld1FallingPlatforms() {
-  const gy = WORLD1_BASE_Y;
-  // Match frontend world1 falling platform layout
-  return [
-    {
-      x: 275,
-      y: gy - 50,
-      width: 55,
-      height: 20,
-      originalY: gy - 50,
-      falling: false,
-      fallTimer: 0,
-    },
-    {
-      x: 1225,
-      y: gy - 15,
-      width: 55,
-      height: 20,
-      originalY: gy - 15,
-      falling: false,
-      fallTimer: 0,
-    },
-    {
-      x: 2220,
-      y: gy - 205,
-      width: 55,
-      height: 20,
-      originalY: gy - 205,
-      falling: false,
-      fallTimer: 0,
-    },
-  ];
+  return [];
 }
 
 function buildWorld2Platforms(baseY = WORLD2_BASE_Y) {
@@ -274,11 +224,12 @@ const WORLDS = {
     hasGlobalFloor: false,
     stopOnRelease: false,
     ...BASE_PHYSICS,
+    friction: 1,
     platforms: buildWorld1Platforms(),
     movingPlatforms: buildWorld1MovingPlatforms(),
     fallingPlatforms: buildWorld1FallingPlatforms(),
-    key: { x: 1950, y: 290, width: 40, height: 40 },
-    door: { x: 3030, y: 455, width: 55, height: 75 },
+    key: { x: 1950, y: 535, width: 40, height: 40 },
+    door: { x: 3030, y: 525, width: 55, height: 75 },
     dangerButtons: [],
   },
   2: {
@@ -293,7 +244,7 @@ const WORLDS = {
     fallingPlatforms: [],
     // FIX: use WORLD2_BASE_Y (frontend groundY), not WORLD2_MAIN_FLOOR_Y
     key: { x: 2400, y: WORLD2_BASE_Y - 220, width: 40, height: 40 },
-    door: { x: 4400, y: WORLD2_BASE_Y - 120, width: 80, height: 120 },
+    door: { x: 4400, y: WORLD2_BASE_Y - 80, width: 80, height: 120 },
     dangerButtons: buildWorld2DangerButtons(),
   },
 };
@@ -315,7 +266,7 @@ function buildWorld2Runtime(baseY = WORLD2_BASE_Y) {
     movingPlatforms: [],
     fallingPlatforms: [],
     key: { x: 2400, y: baseY - 220, width: 40, height: 40 },
-    door: { x: 4400, y: baseY - 120, width: 80, height: 120 },
+    door: { x: 4400, y: baseY - 80, width: 80, height: 120 },
     dangerButtons: buildWorld2DangerButtons(baseY),
   };
 }
@@ -872,7 +823,7 @@ function syncRoomWorld2Height(room, payload) {
 function applyWorldSelection(roomCode, playerId, requestedWorld) {
   const room = rooms.get(roomCode);
   if (!room) return;
-  if (room.hostId !== playerId || room.started) return;
+  if (room.hostId !== playerId) return;
 
   const worldNum = normalizeWorldValue(requestedWorld);
   room.world = worldNum;
@@ -884,9 +835,10 @@ function applyWorldSelection(roomCode, playerId, requestedWorld) {
     players: {},
     keyCollected: false,
     playersAtDoor: [],
-    gameStatus: "waiting",
+    gameStatus: room.started ? "playing" : "waiting",
     world: worldNum,
   };
+  room.inputs = {};
   room.deadUntil = 0;
 
   emitRoomState(roomCode);
