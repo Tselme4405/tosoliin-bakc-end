@@ -272,6 +272,7 @@ const WORLDS = {
     width: 6000,
     groundY: WORLD1_MAIN_FLOOR_Y,
     hasGlobalFloor: false,
+    stopOnRelease: false,
     ...BASE_PHYSICS,
     platforms: buildWorld1Platforms(),
     movingPlatforms: buildWorld1MovingPlatforms(),
@@ -285,6 +286,7 @@ const WORLDS = {
     width: 8200,
     groundY: WORLD2_MAIN_FLOOR_Y,
     hasGlobalFloor: true,
+    stopOnRelease: true,
     ...BASE_PHYSICS,
     platforms: buildWorld2Platforms(),
     movingPlatforms: [],
@@ -307,6 +309,7 @@ function buildWorld2Runtime(baseY = WORLD2_BASE_Y) {
     width: 8200,
     groundY,
     hasGlobalFloor: true,
+    stopOnRelease: true,
     ...BASE_PHYSICS,
     platforms: buildWorld2Platforms(baseY),
     movingPlatforms: [],
@@ -330,6 +333,7 @@ function cloneWorldRuntime(worldId, options = {}) {
     width: w.width,
     groundY: w.groundY,
     hasGlobalFloor: w.hasGlobalFloor,
+    stopOnRelease: Boolean(w.stopOnRelease),
     gravity: w.gravity,
     moveSpeed: w.moveSpeed,
     jumpForce: w.jumpForce,
@@ -495,6 +499,8 @@ function resolvePlayerCollisions(room, selfId) {
   const self = room.gameState.players[selfId];
   if (!self) return;
 
+  self.standingOnPlayer = null;
+
   for (const [otherId, other] of Object.entries(room.gameState.players)) {
     if (otherId === selfId || !other || other.dead) continue;
     if (!intersects(self, other)) continue;
@@ -508,23 +514,51 @@ function resolvePlayerCollisions(room, selfId) {
     const minOverlapY = Math.min(overlapY1, overlapY2);
 
     if (minOverlapX < minOverlapY) {
-      const push = minOverlapX / 2;
-      if (self.x < other.x) {
-        self.x -= push;
-        other.x += push;
-      } else {
-        self.x += push;
-        other.x -= push;
-      }
-    } else {
-      const push = minOverlapY / 2;
-      if (self.y < other.y) {
-        self.y -= push;
-        self.vy = Math.min(self.vy, 0);
-      } else {
-        self.y += push;
-        self.vy = Math.max(self.vy, 0);
-      }
+      // Side collision: only resolve self to avoid double-pushing states.
+      if (self.x < other.x) self.x -= minOverlapX;
+      else self.x += minOverlapX;
+      self.x = clamp(self.x, 0, room.worldRuntime.width - self.width);
+      self.vx = 0;
+      continue;
+    }
+
+    const selfPrevY = Number.isFinite(self.prevY) ? self.prevY : self.y;
+    const otherPrevY = Number.isFinite(other.prevY) ? other.prevY : other.y;
+    const selfBottom = self.y + self.height;
+    const otherBottom = other.y + other.height;
+    const selfPrevBottom = selfPrevY + self.height;
+    const otherPrevBottom = otherPrevY + other.height;
+
+    // One-way stacking: landing player stays on top, support player won't sink.
+    const landingOnOther =
+      self.vy >= 0 &&
+      self.y < other.y &&
+      selfPrevBottom <= other.y + 12 &&
+      selfBottom >= other.y;
+
+    if (landingOnOther) {
+      self.y = other.y - self.height;
+      self.vy = 0;
+      self.onGround = true;
+      self.standingOnPlayer = Number(other.id ?? otherId) || otherId;
+      continue;
+    }
+
+    // Hitting underside while jumping.
+    const hittingUnderOther =
+      self.vy < 0 && selfPrevY >= otherPrevBottom - 8 && self.y <= otherBottom;
+    if (hittingUnderOther) {
+      self.y = otherBottom;
+      self.vy = 0;
+      continue;
+    }
+
+    // Favor stable one-way stacking: do not push the lower player downward.
+    if (self.y < other.y) {
+      self.y = other.y - self.height;
+      self.vy = 0;
+      self.onGround = true;
+      self.standingOnPlayer = Number(other.id ?? otherId) || otherId;
     }
   }
 }
@@ -589,8 +623,12 @@ function applyPlayerStep(room, playerId, dtScale) {
     player.facingRight = true;
     player.animFrame = (player.animFrame + 1) % 4;
   } else {
-    player.vx *= Math.pow(world.friction, dtScale);
-    if (Math.abs(player.vx) < 0.1) player.vx = 0;
+    if (world.stopOnRelease && player.onGround) {
+      player.vx = 0;
+    } else {
+      player.vx *= Math.pow(world.friction, dtScale);
+      if (Math.abs(player.vx) < 0.1) player.vx = 0;
+    }
     player.animFrame = 0;
   }
 
@@ -616,6 +654,7 @@ function applyPlayerStep(room, playerId, dtScale) {
 
   // Vertical
   const prevY = player.y;
+  player.prevY = prevY;
   const prevBottom = prevY + player.height;
   player.vy += world.gravity * dtScale;
   player.vy = Math.min(player.vy, world.maxFallSpeed);
@@ -858,77 +897,95 @@ function applyWorldSelection(roomCode, playerId, requestedWorld) {
 io.on("connection", (socket) => {
   console.log("✅ Socket connected:", socket.id);
 
-  socket.on("createRoom", ({ roomCode, maxPlayers, hostId, playerName }) => {
-    try {
-      const max = Number(maxPlayers);
-      const name = sanitizeName(playerName);
+  socket.on(
+    "createRoom",
+    ({
+      roomCode,
+      maxPlayers,
+      hostId,
+      playerName,
+      world,
+      level,
+      ...payload
+    }) => {
+      try {
+        const max = Number(maxPlayers);
+        const name = sanitizeName(playerName);
+        const initialWorld = normalizeWorldValue(level ?? world);
+        const initialWorld2BaseY =
+          initialWorld === 2
+            ? (normalizeWorld2BaseYFromPayload(payload) ?? WORLD2_BASE_Y)
+            : WORLD2_BASE_Y;
 
-      if (
-        !roomCode ||
-        !hostId ||
-        !Number.isInteger(max) ||
-        max < 1 ||
-        max > 4
-      ) {
-        socket.emit("createDenied", "Invalid parameters");
-        return;
+        if (
+          !roomCode ||
+          !hostId ||
+          !Number.isInteger(max) ||
+          max < 1 ||
+          max > 4
+        ) {
+          socket.emit("createDenied", "Invalid parameters");
+          return;
+        }
+
+        if (rooms.has(roomCode)) {
+          socket.emit("createDenied", "Room code already exists");
+          return;
+        }
+
+        clearPendingDisconnect(hostId);
+
+        const room = {
+          roomCode,
+          maxPlayers: max,
+          hostId,
+          started: false,
+          world: initialWorld,
+          world2BaseY: initialWorld2BaseY,
+          worldRuntime: cloneWorldRuntime(initialWorld, {
+            world2BaseY: initialWorld2BaseY,
+          }),
+          playerOrder: [hostId],
+          players: {
+            [hostId]: { hero: null, ready: false, name: name || "Player 1" },
+          },
+          gameState: {
+            players: {},
+            keyCollected: false,
+            playersAtDoor: [],
+            gameStatus: "waiting",
+            world: initialWorld,
+          },
+          inputs: {},
+          loopHandle: null,
+          lastStepAt: 0,
+          deadUntil: 0,
+        };
+
+        rooms.set(roomCode, room);
+
+        socket.join(roomCode);
+        socket.data.roomCode = roomCode;
+        socket.data.playerId = hostId;
+
+        if (!playerToSocket.has(hostId)) playerToSocket.set(hostId, new Set());
+        playerToSocket.get(hostId).add(socket.id);
+
+        emitRoomState(roomCode);
+        emitGameState(roomCode);
+
+        socket.emit("joinSuccess", {
+          roomCode,
+          playerId: hostId,
+          playerIndex: 1,
+          message: "Host created room",
+        });
+      } catch (e) {
+        console.error("createRoom error:", e);
+        socket.emit("createDenied", "Server error");
       }
-
-      if (rooms.has(roomCode)) {
-        socket.emit("createDenied", "Room code already exists");
-        return;
-      }
-
-      clearPendingDisconnect(hostId);
-
-      const room = {
-        roomCode,
-        maxPlayers: max,
-        hostId,
-        started: false,
-        world: 1,
-        world2BaseY: WORLD2_BASE_Y,
-        worldRuntime: cloneWorldRuntime(1),
-        playerOrder: [hostId],
-        players: {
-          [hostId]: { hero: null, ready: false, name: name || "Player 1" },
-        },
-        gameState: {
-          players: {},
-          keyCollected: false,
-          playersAtDoor: [],
-          gameStatus: "waiting",
-          world: 1,
-        },
-        inputs: {},
-        loopHandle: null,
-        lastStepAt: 0,
-        deadUntil: 0,
-      };
-
-      rooms.set(roomCode, room);
-
-      socket.join(roomCode);
-      socket.data.roomCode = roomCode;
-      socket.data.playerId = hostId;
-
-      if (!playerToSocket.has(hostId)) playerToSocket.set(hostId, new Set());
-      playerToSocket.get(hostId).add(socket.id);
-
-      emitRoomState(roomCode);
-      emitGameState(roomCode);
-
-      socket.emit("joinSuccess", {
-        roomCode,
-        playerId: hostId,
-        playerIndex: 1,
-        message: "Host created room",
-      });
-    } catch (e) {
-      console.error("createRoom error:", e);
-      socket.emit("createDenied", "Server error");
-    }
-  });
+    },
+  );
 
   socket.on("setWorld", ({ world }) => {
     try {
