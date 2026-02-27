@@ -94,7 +94,6 @@ const BASE_PHYSICS = {
   moveSpeed: 5,
   jumpForce: -14,
   maxFallSpeed: 18,
-  friction: 0.85,
 };
 
 // Match frontend sprite/collider dimensions
@@ -127,8 +126,6 @@ function buildWorld1Platforms() {
   const gy = WORLD1_BASE_Y;
   return [
     { x: 0, y: gy + 40, width: 250, height: 20 },
-    // Helper bridge to make map1 easier for all players.
-    { x: 250, y: gy + 40, width: 5500, height: 20 },
     { x: 320, y: gy + 40, width: 60, height: 20 },
     { x: 450, y: gy + 40, width: 60, height: 20 },
     { x: 580, y: gy + 40, width: 60, height: 20 },
@@ -139,22 +136,22 @@ function buildWorld1Platforms() {
     { x: 1440, y: gy - 70, width: 80, height: 20 },
     { x: 1600, y: gy - 50, width: 80, height: 20 },
     { x: 1760, y: gy - 20, width: 100, height: 20 },
-    { x: 2000, y: gy + 20, width: 50, height: 20 },
-    { x: 2120, y: gy + 40, width: 50, height: 20 },
-    { x: 2240, y: gy + 20, width: 50, height: 20 },
-    { x: 2360, y: gy + 40, width: 50, height: 20 },
-    { x: 2480, y: gy + 20, width: 50, height: 20 },
-    { x: 2600, y: gy + 40, width: 50, height: 20 },
+    { x: 2000, y: gy + 20, width: 70, height: 20 },
+    { x: 2120, y: gy + 40, width: 70, height: 20 },
+    { x: 2240, y: gy + 20, width: 70, height: 20 },
+    { x: 2360, y: gy + 40, width: 70, height: 20 },
+    { x: 2480, y: gy + 20, width: 70, height: 20 },
+    { x: 2600, y: gy + 40, width: 70, height: 20 },
     { x: 2720, y: gy + 40, width: 120, height: 20 },
     { x: 3020, y: gy - 90, width: 100, height: 20 },
     { x: 3200, y: gy - 90, width: 100, height: 20 },
     { x: 3380, y: gy - 60, width: 80, height: 20 },
     { x: 3540, y: gy - 30, width: 80, height: 20 },
-    { x: 3700, y: gy + 40, width: 60, height: 20 },
-    { x: 3850, y: gy + 15, width: 60, height: 20 },
-    { x: 3990, y: gy + 40, width: 60, height: 20 },
-    { x: 4130, y: gy + 15, width: 60, height: 20 },
-    { x: 4270, y: gy + 40, width: 60, height: 20 },
+    { x: 3700, y: gy + 40, width: 80, height: 20 },
+    { x: 3850, y: gy + 15, width: 80, height: 20 },
+    { x: 3990, y: gy + 40, width: 80, height: 20 },
+    { x: 4130, y: gy + 15, width: 80, height: 20 },
+    { x: 4270, y: gy + 40, width: 80, height: 20 },
     { x: 4410, y: gy + 40, width: 150, height: 20 },
     { x: 4760, y: gy - 100, width: 120, height: 20 },
     { x: 4960, y: gy - 80, width: 80, height: 20 },
@@ -166,11 +163,63 @@ function buildWorld1Platforms() {
 }
 
 function buildWorld1MovingPlatforms() {
-  return [];
+  const gy = WORLD1_BASE_Y;
+  return [
+    {
+      x: 650,
+      y: gy - 250,
+      width: 70,
+      height: 20,
+      startX: 620,
+      endX: 780,
+      speed: 2,
+      direction: 1,
+    },
+    {
+      x: 1120,
+      y: gy - 60,
+      width: 60,
+      height: 20,
+      startX: 1080,
+      endX: 1240,
+      speed: 1.8,
+      direction: 1,
+    },
+  ];
 }
 
 function buildWorld1FallingPlatforms() {
-  return [];
+  const gy = WORLD1_BASE_Y;
+  // Match frontend world1 falling platform layout
+  return [
+    {
+      x: 275,
+      y: gy - 50,
+      width: 55,
+      height: 20,
+      originalY: gy - 50,
+      falling: false,
+      fallTimer: 0,
+    },
+    {
+      x: 1225,
+      y: gy - 15,
+      width: 55,
+      height: 20,
+      originalY: gy - 15,
+      falling: false,
+      fallTimer: 0,
+    },
+    {
+      x: 2220,
+      y: gy - 205,
+      width: 55,
+      height: 20,
+      originalY: gy - 205,
+      falling: false,
+      fallTimer: 0,
+    },
+  ];
 }
 
 function buildWorld2Platforms(baseY = WORLD2_BASE_Y) {
@@ -224,12 +273,11 @@ const WORLDS = {
     hasGlobalFloor: false,
     stopOnRelease: false,
     ...BASE_PHYSICS,
-    friction: 1,
     platforms: buildWorld1Platforms(),
     movingPlatforms: buildWorld1MovingPlatforms(),
     fallingPlatforms: buildWorld1FallingPlatforms(),
-    key: { x: 1950, y: 535, width: 40, height: 40 },
-    door: { x: 3030, y: 525, width: 55, height: 75 },
+    key: { x: 1950, y: 290, width: 40, height: 40 },
+    door: { x: 3030, y: 455, width: 55, height: 75 },
     dangerButtons: [],
   },
   2: {
@@ -289,7 +337,6 @@ function cloneWorldRuntime(worldId, options = {}) {
     moveSpeed: w.moveSpeed,
     jumpForce: w.jumpForce,
     maxFallSpeed: w.maxFallSpeed,
-    friction: w.friction,
     platforms: w.platforms.map((p) => ({ ...p })),
     movingPlatforms: w.movingPlatforms.map((p) => ({ ...p })),
     fallingPlatforms: w.fallingPlatforms.map((p) => ({ ...p })),
@@ -574,12 +621,7 @@ function applyPlayerStep(room, playerId, dtScale) {
     player.facingRight = true;
     player.animFrame = (player.animFrame + 1) % 4;
   } else {
-    if (world.stopOnRelease && player.onGround) {
-      player.vx = 0;
-    } else {
-      player.vx *= Math.pow(world.friction, dtScale);
-      if (Math.abs(player.vx) < 0.1) player.vx = 0;
-    }
+    player.vx = 0;
     player.animFrame = 0;
   }
 
@@ -724,7 +766,8 @@ function evaluateGameState(room) {
       (pid) => Number(players[pid]?.id) || 0,
     );
 
-    if (playerIds.length > 0 && atDoor.length === playerIds.length) {
+    const requiredAtDoor = room.world === 1 ? 2 : playerIds.length;
+    if (requiredAtDoor > 0 && atDoor.length >= requiredAtDoor) {
       room.gameState.gameStatus = "won";
       return;
     }
@@ -823,7 +866,7 @@ function syncRoomWorld2Height(room, payload) {
 function applyWorldSelection(roomCode, playerId, requestedWorld) {
   const room = rooms.get(roomCode);
   if (!room) return;
-  if (room.hostId !== playerId) return;
+  if (room.hostId !== playerId || room.started) return;
 
   const worldNum = normalizeWorldValue(requestedWorld);
   room.world = worldNum;
@@ -835,10 +878,9 @@ function applyWorldSelection(roomCode, playerId, requestedWorld) {
     players: {},
     keyCollected: false,
     playersAtDoor: [],
-    gameStatus: room.started ? "playing" : "waiting",
+    gameStatus: "waiting",
     world: worldNum,
   };
-  room.inputs = {};
   room.deadUntil = 0;
 
   emitRoomState(roomCode);
