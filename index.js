@@ -10,7 +10,7 @@ const PORT = Number(process.env.PORT || 4000);
 const NODE_ENV = process.env.NODE_ENV || "development";
 const CLIENT_URL = process.env.CLIENT_URL || "http://localhost:3000";
 const DISCONNECT_GRACE_MS = Number(process.env.DISCONNECT_GRACE_MS || 15000);
-const TICK_RATE = Number(process.env.TICK_RATE || 60);
+const TICK_RATE = Number(process.env.TICK_RATE || 30);
 const RESPAWN_DELAY_MS = Number(process.env.RESPAWN_DELAY_MS || 1800);
 
 // ---------------- CORS ----------------
@@ -125,7 +125,7 @@ function intersects(a, b) {
 function buildWorld1Platforms() {
   const gy = WORLD1_BASE_Y;
   return [
-    { x: 0, y: gy + 40, width: 250, height: 20 },
+    { x: 0, y: gy + 40, width: 420, height: 20 },
     { x: 320, y: gy + 40, width: 60, height: 20 },
     { x: 450, y: gy + 40, width: 60, height: 20 },
     { x: 580, y: gy + 40, width: 60, height: 20 },
@@ -136,22 +136,22 @@ function buildWorld1Platforms() {
     { x: 1440, y: gy - 70, width: 80, height: 20 },
     { x: 1600, y: gy - 50, width: 80, height: 20 },
     { x: 1760, y: gy - 20, width: 100, height: 20 },
-    { x: 2000, y: gy + 20, width: 70, height: 20 },
-    { x: 2120, y: gy + 40, width: 70, height: 20 },
-    { x: 2240, y: gy + 20, width: 70, height: 20 },
-    { x: 2360, y: gy + 40, width: 70, height: 20 },
-    { x: 2480, y: gy + 20, width: 70, height: 20 },
-    { x: 2600, y: gy + 40, width: 70, height: 20 },
+    { x: 2000, y: gy + 20, width: 50, height: 20 },
+    { x: 2120, y: gy + 40, width: 50, height: 20 },
+    { x: 2240, y: gy + 20, width: 50, height: 20 },
+    { x: 2360, y: gy + 40, width: 50, height: 20 },
+    { x: 2480, y: gy + 20, width: 50, height: 20 },
+    { x: 2600, y: gy + 40, width: 50, height: 20 },
     { x: 2720, y: gy + 40, width: 120, height: 20 },
     { x: 3020, y: gy - 90, width: 100, height: 20 },
     { x: 3200, y: gy - 90, width: 100, height: 20 },
     { x: 3380, y: gy - 60, width: 80, height: 20 },
     { x: 3540, y: gy - 30, width: 80, height: 20 },
-    { x: 3700, y: gy + 40, width: 80, height: 20 },
-    { x: 3850, y: gy + 15, width: 80, height: 20 },
-    { x: 3990, y: gy + 40, width: 80, height: 20 },
-    { x: 4130, y: gy + 15, width: 80, height: 20 },
-    { x: 4270, y: gy + 40, width: 80, height: 20 },
+    { x: 3700, y: gy + 40, width: 60, height: 20 },
+    { x: 3850, y: gy + 15, width: 60, height: 20 },
+    { x: 3990, y: gy + 40, width: 60, height: 20 },
+    { x: 4130, y: gy + 15, width: 60, height: 20 },
+    { x: 4270, y: gy + 40, width: 60, height: 20 },
     { x: 4410, y: gy + 40, width: 150, height: 20 },
     { x: 4760, y: gy - 100, width: 120, height: 20 },
     { x: 4960, y: gy - 80, width: 80, height: 20 },
@@ -231,37 +231,22 @@ function buildWorld2Platforms(baseY = WORLD2_BASE_Y) {
 function buildWorld2DangerButtons(baseY = WORLD2_BASE_Y) {
   const gy = baseY;
   return [
-    { x: 300, y: gy + 5, width: 40, height: 35 },
-    { x: 530, y: gy + 5, width: 40, height: 35 },
-    { x: 770, y: gy + 5, width: 40, height: 35 },
-    { x: 1010, y: gy + 5, width: 40, height: 35 },
-    { x: 1250, y: gy + 5, width: 40, height: 35 },
-    { x: 1490, y: gy + 5, width: 40, height: 35 },
-    { x: 1830, y: gy + 5, width: 40, height: 35 },
-    { x: 2070, y: gy + 5, width: 40, height: 35 },
-    { x: 2310, y: gy + 5, width: 40, height: 35 },
-    { x: 2550, y: gy + 5, width: 40, height: 35 },
-    { x: 2790, y: gy + 5, width: 40, height: 35 },
-    { x: 3060, y: gy + 5, width: 40, height: 35 },
-    { x: 3300, y: gy + 5, width: 40, height: 35 },
-    { x: 3540, y: gy + 5, width: 40, height: 35 },
-    { x: 3780, y: gy + 5, width: 40, height: 35 },
-    { x: 4020, y: gy + 5, width: 40, height: 35 },
-    { x: 4260, y: gy + 5, width: 40, height: 35 },
-    { x: 4500, y: gy + 5, width: 40, height: 35 },
-    { x: 4740, y: gy + 5, width: 40, height: 35 },
-    { x: 4980, y: gy + 5, width: 40, height: 35 },
-    { x: 5220, y: gy + 5, width: 40, height: 35 },
-    { x: 5460, y: gy + 5, width: 40, height: 35 },
-    { x: 5730, y: gy + 5, width: 40, height: 35 },
-    { x: 5970, y: gy + 5, width: 40, height: 35 },
-    { x: 6210, y: gy + 5, width: 40, height: 35 },
-    { x: 6450, y: gy + 5, width: 40, height: 35 },
-    { x: 6690, y: gy + 5, width: 40, height: 35 },
-    { x: 6930, y: gy + 5, width: 40, height: 35 },
-    { x: 7170, y: gy + 5, width: 40, height: 35 },
-    { x: 7410, y: gy + 5, width: 40, height: 35 },
-    { x: 7890, y: gy + 5, width: 40, height: 35 },
+    { x: 300, y: gy + 5, width: 28, height: 24 },
+    { x: 770, y: gy + 5, width: 28, height: 24 },
+    { x: 1250, y: gy + 5, width: 28, height: 24 },
+    { x: 1830, y: gy + 5, width: 28, height: 24 },
+    { x: 2310, y: gy + 5, width: 28, height: 24 },
+    { x: 2790, y: gy + 5, width: 28, height: 24 },
+    { x: 3300, y: gy + 5, width: 28, height: 24 },
+    { x: 3780, y: gy + 5, width: 28, height: 24 },
+    { x: 4260, y: gy + 5, width: 28, height: 24 },
+    { x: 4740, y: gy + 5, width: 28, height: 24 },
+    { x: 5220, y: gy + 5, width: 28, height: 24 },
+    { x: 5730, y: gy + 5, width: 28, height: 24 },
+    { x: 6210, y: gy + 5, width: 28, height: 24 },
+    { x: 6690, y: gy + 5, width: 28, height: 24 },
+    { x: 7170, y: gy + 5, width: 28, height: 24 },
+    { x: 7890, y: gy + 5, width: 28, height: 24 },
   ];
 }
 
@@ -276,7 +261,7 @@ const WORLDS = {
     platforms: buildWorld1Platforms(),
     movingPlatforms: buildWorld1MovingPlatforms(),
     fallingPlatforms: buildWorld1FallingPlatforms(),
-    key: { x: 1950, y: 290, width: 40, height: 40 },
+    key: { x: 1950, y: 350, width: 40, height: 40 },
     door: { x: 3030, y: 455, width: 55, height: 75 },
     dangerButtons: [],
   },
@@ -291,7 +276,7 @@ const WORLDS = {
     movingPlatforms: [],
     fallingPlatforms: [],
     // FIX: use WORLD2_BASE_Y (frontend groundY), not WORLD2_MAIN_FLOOR_Y
-    key: { x: 2400, y: WORLD2_BASE_Y - 220, width: 40, height: 40 },
+    key: { x: 2400, y: WORLD2_BASE_Y - 160, width: 40, height: 40 },
     door: { x: 4400, y: WORLD2_BASE_Y - 80, width: 80, height: 120 },
     dangerButtons: buildWorld2DangerButtons(),
   },
@@ -313,7 +298,7 @@ function buildWorld2Runtime(baseY = WORLD2_BASE_Y) {
     platforms: buildWorld2Platforms(baseY),
     movingPlatforms: [],
     fallingPlatforms: [],
-    key: { x: 2400, y: baseY - 220, width: 40, height: 40 },
+    key: { x: 2400, y: baseY - 160, width: 40, height: 40 },
     door: { x: 4400, y: baseY - 80, width: 80, height: 120 },
     dangerButtons: buildWorld2DangerButtons(baseY),
   };
