@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-require-imports */
 // backend-server-fixed.js
 const express = require("express");
 const http = require("http");
@@ -10,7 +11,7 @@ const PORT = Number(process.env.PORT || 4000);
 const NODE_ENV = process.env.NODE_ENV || "development";
 const CLIENT_URL = process.env.CLIENT_URL || "http://localhost:3000";
 const DISCONNECT_GRACE_MS = Number(process.env.DISCONNECT_GRACE_MS || 15000);
-const TICK_RATE = Number(process.env.TICK_RATE || 30);
+const TICK_RATE = Number(process.env.TICK_RATE || 60);
 const RESPAWN_DELAY_MS = Number(process.env.RESPAWN_DELAY_MS || 1800);
 
 // ---------------- CORS ----------------
@@ -89,11 +90,18 @@ const io = new Server(server, {
 });
 
 // ---------------- Constants ----------------
-const BASE_PHYSICS = {
-  gravity: 0.6,
-  moveSpeed: 5,
+const WORLD1_PHYSICS = {
+  gravity: 0.3,
+  moveSpeed: 3,
   jumpForce: -14,
   maxFallSpeed: 18,
+};
+
+const WORLD2_PHYSICS = {
+  gravity: 0.5,
+  moveSpeed: 5,
+  jumpForce: -12,
+  maxFallSpeed: 16,
 };
 
 // Match frontend sprite/collider dimensions
@@ -231,22 +239,21 @@ function buildWorld2Platforms(baseY = WORLD2_BASE_Y) {
 function buildWorld2DangerButtons(baseY = WORLD2_BASE_Y) {
   const gy = baseY;
   return [
-    { x: 300, y: gy + 5, width: 28, height: 24 },
-    { x: 770, y: gy + 5, width: 28, height: 24 },
-    { x: 1250, y: gy + 5, width: 28, height: 24 },
-    { x: 1830, y: gy + 5, width: 28, height: 24 },
-    { x: 2310, y: gy + 5, width: 28, height: 24 },
-    { x: 2790, y: gy + 5, width: 28, height: 24 },
-    { x: 3300, y: gy + 5, width: 28, height: 24 },
-    { x: 3780, y: gy + 5, width: 28, height: 24 },
-    { x: 4260, y: gy + 5, width: 28, height: 24 },
-    { x: 4740, y: gy + 5, width: 28, height: 24 },
-    { x: 5220, y: gy + 5, width: 28, height: 24 },
-    { x: 5730, y: gy + 5, width: 28, height: 24 },
-    { x: 6210, y: gy + 5, width: 28, height: 24 },
-    { x: 6690, y: gy + 5, width: 28, height: 24 },
-    { x: 7170, y: gy + 5, width: 28, height: 24 },
-    { x: 7890, y: gy + 5, width: 28, height: 24 },
+    { x: 1880, y: gy + 18, width: 28, height: 24 },
+    { x: 2190, y: gy + 18, width: 28, height: 24 },
+    { x: 2660, y: gy + 18, width: 28, height: 24 },
+    { x: 3010, y: gy + 18, width: 28, height: 24 },
+    { x: 3460, y: gy + 18, width: 28, height: 24 },
+    { x: 3890, y: gy + 18, width: 28, height: 24 },
+    { x: 4210, y: gy + 18, width: 28, height: 24 },
+    { x: 4680, y: gy + 18, width: 28, height: 24 },
+    { x: 5040, y: gy + 18, width: 28, height: 24 },
+    { x: 5510, y: gy + 18, width: 28, height: 24 },
+    { x: 5920, y: gy + 18, width: 28, height: 24 },
+    { x: 6380, y: gy + 18, width: 28, height: 24 },
+    { x: 6840, y: gy + 18, width: 28, height: 24 },
+    { x: 7290, y: gy + 18, width: 28, height: 24 },
+    { x: 7760, y: gy + 18, width: 28, height: 24 },
   ];
 }
 
@@ -257,7 +264,7 @@ const WORLDS = {
     groundY: WORLD1_MAIN_FLOOR_Y,
     hasGlobalFloor: false,
     stopOnRelease: false,
-    ...BASE_PHYSICS,
+    ...WORLD1_PHYSICS,
     platforms: buildWorld1Platforms(),
     movingPlatforms: buildWorld1MovingPlatforms(),
     fallingPlatforms: buildWorld1FallingPlatforms(),
@@ -271,7 +278,7 @@ const WORLDS = {
     groundY: WORLD2_MAIN_FLOOR_Y,
     hasGlobalFloor: true,
     stopOnRelease: true,
-    ...BASE_PHYSICS,
+    ...WORLD2_PHYSICS,
     platforms: buildWorld2Platforms(),
     movingPlatforms: [],
     fallingPlatforms: [],
@@ -294,7 +301,7 @@ function buildWorld2Runtime(baseY = WORLD2_BASE_Y) {
     groundY,
     hasGlobalFloor: true,
     stopOnRelease: true,
-    ...BASE_PHYSICS,
+    ...WORLD2_PHYSICS,
     platforms: buildWorld2Platforms(baseY),
     movingPlatforms: [],
     fallingPlatforms: [],
@@ -613,6 +620,11 @@ function applyPlayerStep(room, playerId, dtScale) {
   if (input.jump && player.onGround) {
     player.vy = world.jumpForce;
     player.onGround = false;
+  }
+
+  // Map2 jump-cut: jump товч суллахад өсөлтийг богиносгож "hover" мэдрэмжийг бууруулна.
+  if (world.stopOnRelease && !input.jump && player.vy < 0) {
+    player.vy += world.gravity * 1.4 * dtScale;
   }
 
   const plats = platformListForCollisions(world);
@@ -1248,3 +1260,4 @@ server.listen(PORT, "0.0.0.0", () => {
   console.log("🔓 Allowed origins:", allowedOrigins);
   console.log("🔧 CLIENT_URL env:", CLIENT_URL);
 });
+//dgfdfdfdf
