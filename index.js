@@ -93,7 +93,7 @@ const io = new Server(server, {
 const WORLD1_PHYSICS = {
   gravity: 0.3,
   moveSpeed: 3,
-  jumpForce: -14,
+  jumpForce: -11,
   maxFallSpeed: 18,
 };
 
@@ -607,11 +607,13 @@ function applyPlayerStep(room, playerId, dtScale) {
   if (input.left) {
     player.vx = -world.moveSpeed;
     player.facingRight = false;
-    player.animFrame = (player.animFrame + 1) % 4;
+    // Keep walk state non-zero to avoid flickering back to idle sprite.
+    player.animFrame = 1;
   } else if (input.right) {
     player.vx = world.moveSpeed;
     player.facingRight = true;
-    player.animFrame = (player.animFrame + 1) % 4;
+    // Keep walk state non-zero to avoid flickering back to idle sprite.
+    player.animFrame = 1;
   } else {
     player.vx = 0;
     player.animFrame = 0;
@@ -1260,4 +1262,3 @@ server.listen(PORT, "0.0.0.0", () => {
   console.log("🔓 Allowed origins:", allowedOrigins);
   console.log("🔧 CLIENT_URL env:", CLIENT_URL);
 });
-//dgfdfdfdf
